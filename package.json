@@ -1,0 +1,29 @@
+{
+  "name": "npmtastic",
+  "version": "0.1.0",
+  "description": "A Node.js dependency auditor — pin posture, registry drift, and known CVEs.",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "bin": { "npmtastic": "./dist/bin.js", "ntc": "./dist/bin.js" },
+  "main": "./dist/index.js",
+  "files": ["dist"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "tsx src/bin.ts"
+  },
+  "dependencies": {
+    "semver": "^7.6.0",
+    "yaml": "^2.4.0",
+    "picocolors": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/semver": "^7.5.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  }
+}
