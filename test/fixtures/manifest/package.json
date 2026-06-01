@@ -1,0 +1,14 @@
+{
+  "name": "manifest-app",
+  "dependencies": {
+    "left-pad": "^1.3.0",
+    "Lodash": "4.17.21",
+    "@scope/util": "~2.0.0",
+    "from-git": "github:user/repo#v1",
+    "local-dep": "file:../local",
+    "tarball": "https://example.com/pkg.tgz"
+  },
+  "devDependencies": {
+    "vitest": "*"
+  }
+}
