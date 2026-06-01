@@ -197,15 +197,14 @@ function parseYarnBerry(text: string, source: DepSource): Dep[] {
 }
 
 function parseYarnLock(source: DepSource): Dep[] {
-  let text: string;
   try {
-    text = readText(source.path);
+    const text = readText(source.path);
+    const isBerry = /^\s*__metadata:/m.test(text);
+    return isBerry ? parseYarnBerry(text, source) : parseYarnClassic(text, source);
   } catch (e) {
     warn(`could not parse ${source.path}: ${(e as Error).message}`);
     return [];
   }
-  const isBerry = /^\s*__metadata:/m.test(text);
-  return isBerry ? parseYarnBerry(text, source) : parseYarnClassic(text, source);
 }
 
 export function parseSource(source: DepSource): Dep[] {

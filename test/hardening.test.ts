@@ -54,6 +54,17 @@ describe("hardening: UTF-16 decoding", () => {
   });
 });
 
+describe("hardening: malformed berry yarn.lock degrades", () => {
+  it("a __metadata-shaped yarn.lock with broken YAML returns [] (no throw)", () => {
+    const d = mkdtempSync(join(tmpdir(), "ntc-badberry-"));
+    writeFileSync(join(d, "package.json"), JSON.stringify({ name: "bb", dependencies: { a: "^1" } }));
+    // Has `__metadata:` so it routes to the berry (YAML) path, but the YAML is invalid.
+    writeFileSync(join(d, "yarn.lock"), '__metadata:\n  version: 6\n\n"a@npm:^1": [ unclosed\n');
+    expect(() => collectDeps(discoverOne(d))).not.toThrow();
+    expect(collectDeps(discoverOne(d))).toEqual([]);
+  });
+});
+
 describe("hardening: tree scan survives a broken project", () => {
   it("discoverTree + per-project collectDeps never throws across mixed-validity tree", () => {
     const root = mkdtempSync(join(tmpdir(), "ntc-tree-"));
