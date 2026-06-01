@@ -70,3 +70,65 @@ export function makeProject(p: Project): Project {
   p.sources.forEach((s) => Object.freeze(s));
   return Object.freeze({ ...p, sources: Object.freeze([...p.sources]) });
 }
+
+export interface ReleaseInfo {
+  readonly version: string;
+  readonly deprecated: string | null;
+  readonly enginesNode: string | null;
+  readonly uploadTime: string | null; // ISO 8601
+}
+
+export interface PackageMeta {
+  readonly name: string;
+  readonly distTagLatest: string | null;
+  readonly releases: readonly ReleaseInfo[];
+}
+
+export interface Vulnerability {
+  readonly id: string;
+  readonly aliases: readonly string[];
+  readonly summary: string | null;
+  readonly fixedVersions: readonly string[];
+}
+
+export interface DepAudit {
+  readonly dep: Dep;
+  readonly latest: string | null;
+  readonly latestIncludingPrereleases: string | null;
+  readonly drift: SemverDrift;
+  readonly pinStatus: PinStatus;
+  readonly deprecated: string | null; // deprecation message of the relevant version, else null
+  readonly vulnerabilities: readonly Vulnerability[];
+  readonly minSafeVersion: string | null;
+  readonly latestReleaseDate: string | null; // ISO 8601
+  readonly latestReleaseAgeDays: number | null;
+  readonly warnings: readonly string[];
+}
+
+export interface ProjectAudit {
+  readonly project: Project;
+  readonly deps: readonly DepAudit[];
+  readonly pinningScore: number | null;
+  readonly driftSummary: Readonly<Record<string, number>>;
+  readonly deprecatedCount: number;
+  readonly registryUnreachable: number;
+  readonly vulnCount: number;
+  readonly vulnUnreachable: number;
+  readonly suppressedCount: number;
+}
+
+export function makeDepAudit(d: DepAudit): DepAudit {
+  return Object.freeze({
+    ...d,
+    vulnerabilities: Object.freeze([...d.vulnerabilities]),
+    warnings: Object.freeze([...d.warnings]),
+  });
+}
+
+export function makeProjectAudit(p: ProjectAudit): ProjectAudit {
+  return Object.freeze({
+    ...p,
+    deps: Object.freeze([...p.deps]),
+    driftSummary: Object.freeze({ ...p.driftSummary }),
+  });
+}
