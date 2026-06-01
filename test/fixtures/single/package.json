@@ -1,0 +1,7 @@
+{
+  "name": "single-app",
+  "version": "1.0.0",
+  "engines": { "node": ">=18" },
+  "dependencies": { "left-pad": "^1.3.0" },
+  "devDependencies": { "vitest": "^1.4.0" }
+}

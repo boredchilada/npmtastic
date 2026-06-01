@@ -1,0 +1,1 @@
+{ "name": "app-b", "optionalDependencies": { "fsevents": "^2.3.0" } }
