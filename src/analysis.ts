@@ -2,6 +2,12 @@
 import semver from "semver";
 import { PinStatus, SemverDrift } from "./models.js";
 import type { PackageMeta, ReleaseInfo } from "./models.js";
+import { collectDeps } from "./parsing.js";
+import { computeMinSafeVersion } from "./vulns.js";
+import { makeDepAudit, makeProjectAudit } from "./models.js";
+import type { Dep, DepAudit, Project, ProjectAudit } from "./models.js";
+import type { RegistryClient } from "./registry.js";
+import type { VulnClient } from "./vulns.js";
 
 export function classifyPinStatus(range: string, url: string | null): PinStatus {
   if (url) return PinStatus.URL;
@@ -90,4 +96,106 @@ export function pickLatest(meta: PackageMeta, includePrereleases: boolean): Late
     latestIncludingPrereleases: latestIncl?.version ?? null,
     latestReleaseDate: effective?.uploadTime ?? null,
   };
+}
+
+export interface AuditOptions {
+  readonly includePrereleases?: boolean;
+}
+
+function currentVersion(dep: Dep): string | null {
+  if (dep.resolved && semver.valid(dep.resolved)) return dep.resolved;
+  if (semver.valid(dep.range)) return dep.range;
+  return null;
+}
+
+function ageDays(iso: string | null): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return Math.floor((Date.now() - t) / 86_400_000);
+}
+
+function emptyDriftSummary(): Record<string, number> {
+  return {
+    [SemverDrift.NONE]: 0,
+    [SemverDrift.PRERELEASE]: 0,
+    [SemverDrift.PATCH]: 0,
+    [SemverDrift.MINOR]: 0,
+    [SemverDrift.MAJOR]: 0,
+    [SemverDrift.UNKNOWN]: 0,
+  };
+}
+
+export async function auditProject(
+  project: Project,
+  registry: RegistryClient,
+  vuln: VulnClient,
+  opts: AuditOptions,
+): Promise<ProjectAudit> {
+  const includePre = opts.includePrereleases ?? false;
+  const deps = collectDeps(project);
+
+  const metaMap = await registry.fetchMany(deps.map((d) => d.name));
+  const pairs = deps
+    .filter((d) => d.resolved !== null && semver.valid(d.resolved) !== null)
+    .map((d) => ({ name: d.name, version: d.resolved as string }));
+  const vulnMap = await vuln.fetchFor(pairs);
+
+  const depAudits: DepAudit[] = deps.map((d) => {
+    const meta = metaMap.get(d.name) ?? null;
+    const pick = meta
+      ? pickLatest(meta, includePre)
+      : { latest: null, latestIncludingPrereleases: null, latestReleaseDate: null };
+    const effectiveLatest = includePre ? pick.latestIncludingPrereleases : pick.latest;
+    const current = currentVersion(d);
+    const drift = meta ? classifyDrift(current, effectiveLatest) : SemverDrift.UNKNOWN;
+    const pinStatus = classifyPinStatus(d.range, d.url);
+    const deprecated =
+      meta && current ? (meta.releases.find((r) => r.version === current)?.deprecated ?? null) : null;
+    const key = d.resolved && semver.valid(d.resolved) ? `${d.name}@${d.resolved}` : null;
+    const vulnerabilities = key ? (vulnMap.get(key) ?? []) : [];
+    const minSafeVersion =
+      key && vulnerabilities.length > 0 ? computeMinSafeVersion(d.resolved as string, vulnerabilities) : null;
+
+    return makeDepAudit({
+      dep: d,
+      latest: pick.latest,
+      latestIncludingPrereleases: pick.latestIncludingPrereleases,
+      drift,
+      pinStatus,
+      deprecated,
+      vulnerabilities,
+      minSafeVersion,
+      latestReleaseDate: pick.latestReleaseDate,
+      latestReleaseAgeDays: ageDays(pick.latestReleaseDate),
+      warnings: [],
+    });
+  });
+
+  const driftSummary = emptyDriftSummary();
+  for (const a of depAudits) driftSummary[a.drift] = (driftSummary[a.drift] ?? 0) + 1;
+
+  const directNonUrl = depAudits.filter((a) => a.dep.direct && a.pinStatus !== PinStatus.URL);
+  const pinningScore =
+    directNonUrl.length === 0
+      ? null
+      : directNonUrl.filter((a) => a.pinStatus === PinStatus.PINNED || a.pinStatus === PinStatus.COMPATIBLE).length /
+        directNonUrl.length;
+
+  const vulnCount = depAudits.reduce((n, a) => n + a.vulnerabilities.length, 0);
+  const deprecatedCount = depAudits.filter((a) => a.deprecated !== null).length;
+  const registryUnreachable = deps.filter((d) => !metaMap.has(d.name)).length;
+  const vulnUnreachable = pairs.filter((p) => vuln.unreachable.has(`${p.name}@${p.version}`)).length;
+
+  return makeProjectAudit({
+    project,
+    deps: depAudits,
+    pinningScore,
+    driftSummary,
+    deprecatedCount,
+    registryUnreachable,
+    vulnCount,
+    vulnUnreachable,
+    suppressedCount: 0,
+  });
 }
