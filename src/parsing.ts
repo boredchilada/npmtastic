@@ -129,6 +129,59 @@ function parsePnpmLock(source: DepSource): Dep[] {
   return deps;
 }
 
+function descriptorName(descriptor: string): string | null {
+  // descriptor examples: 'left-pad@^1.3.0', '@scope/util@~2.0.0', 'left-pad@npm:^1.3.0'
+  let d = descriptor.trim().replace(/^"|"$/g, "");
+  const scoped = d.startsWith("@");
+  const body = scoped ? d.slice(1) : d;
+  const at = body.indexOf("@");
+  if (at === -1) return null;
+  return (scoped ? "@" : "") + body.slice(0, at);
+}
+
+function parseYarnClassic(text: string, source: DepSource): Dep[] {
+  const deps: Dep[] = [];
+  const lines = text.split(/\r?\n/);
+  let pendingName: string | null = null;
+
+  for (const line of lines) {
+    if (!line.trim() || line.startsWith("#")) continue;
+    if (!line.startsWith(" ") && line.trimEnd().endsWith(":")) {
+      // descriptor header line: "a@^1, b@^2:" — take the first descriptor's name
+      const header = line.trimEnd().replace(/:$/, "");
+      const firstDescriptor = header.split(",")[0]!.trim();
+      pendingName = descriptorName(firstDescriptor);
+      continue;
+    }
+    const m = line.trim().match(/^version:?\s+"?([^"\s]+)"?$/);
+    if (m && pendingName) {
+      deps.push(lockDep(pendingName, m[1]!, source));
+      pendingName = null;
+    }
+  }
+  return deps;
+}
+
+function parseYarnBerry(text: string, source: DepSource): Dep[] {
+  const raw = parseYaml(text) as Record<string, unknown>;
+  const deps: Dep[] = [];
+  for (const [key, entryUnknown] of Object.entries(raw)) {
+    if (key === "__metadata") continue;
+    const entry = entryUnknown as { version?: unknown };
+    if (!entry || typeof entry.version === "undefined") continue;
+    const name = descriptorName(key.split(",")[0]!.trim());
+    if (!name) continue;
+    deps.push(lockDep(name, String(entry.version), source));
+  }
+  return deps;
+}
+
+function parseYarnLock(source: DepSource): Dep[] {
+  const text = readFileSync(source.path, "utf-8");
+  const isBerry = /^\s*__metadata:/m.test(text);
+  return isBerry ? parseYarnBerry(text, source) : parseYarnClassic(text, source);
+}
+
 export function parseSource(source: DepSource): Dep[] {
   switch (source.kind) {
     case DepSourceKind.MANIFEST:
@@ -137,6 +190,8 @@ export function parseSource(source: DepSource): Dep[] {
       return parseNpmLock(source);
     case DepSourceKind.PNPM_LOCK:
       return parsePnpmLock(source);
+    case DepSourceKind.YARN_LOCK:
+      return parseYarnLock(source);
     default:
       // lockfile parsers added in later tasks
       return [];
