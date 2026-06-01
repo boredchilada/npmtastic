@@ -26,6 +26,12 @@ function depToJson(a: DepAudit): unknown {
       summary: v.summary,
       fixedVersions: v.fixedVersions,
     })),
+    suppressedVulnerabilities: (a.suppressedVulnerabilities ?? []).map((v) => ({
+      id: v.id,
+      aliases: v.aliases,
+      summary: v.summary,
+      fixedVersions: v.fixedVersions,
+    })),
     warnings: a.warnings,
   };
 }

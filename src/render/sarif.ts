@@ -12,6 +12,7 @@ interface SarifResult {
   level: "error";
   message: { text: string };
   locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }>;
+  suppressions?: Array<{ kind: "external" }>;
 }
 
 function toUri(path: string): string {
@@ -39,6 +40,16 @@ export function renderSarif(audits: readonly ProjectAudit[]): string {
           level: "error",
           message: { text: `${dep.dep.name}@${dep.dep.resolved ?? dep.dep.range}: ${v.summary ?? v.id}${fix}` },
           locations: [{ physicalLocation: { artifactLocation: { uri } } }],
+        });
+      }
+      for (const v of dep.suppressedVulnerabilities ?? []) {
+        if (!rules.has(v.id)) rules.set(v.id, ruleFor(v));
+        results.push({
+          ruleId: v.id,
+          level: "error",
+          message: { text: `${dep.dep.name}@${dep.dep.resolved ?? dep.dep.range}: ${v.summary ?? v.id} (suppressed)` },
+          locations: [{ physicalLocation: { artifactLocation: { uri } } }],
+          suppressions: [{ kind: "external" }],
         });
       }
     }

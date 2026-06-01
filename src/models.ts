@@ -99,6 +99,7 @@ export interface DepAudit {
   readonly pinStatus: PinStatus;
   readonly deprecated: string | null; // deprecation message of the relevant version, else null
   readonly vulnerabilities: readonly Vulnerability[];
+  readonly suppressedVulnerabilities?: readonly Vulnerability[];
   readonly minSafeVersion: string | null;
   readonly latestReleaseDate: string | null; // ISO 8601
   readonly latestReleaseAgeDays: number | null;
@@ -121,6 +122,7 @@ export function makeDepAudit(d: DepAudit): DepAudit {
   return Object.freeze({
     ...d,
     vulnerabilities: Object.freeze([...d.vulnerabilities]),
+    suppressedVulnerabilities: Object.freeze([...(d.suppressedVulnerabilities ?? [])]),
     warnings: Object.freeze([...d.warnings]),
   });
 }

@@ -68,4 +68,14 @@ describe("auditProject", () => {
     expect(audit.driftSummary[SemverDrift.PATCH]).toBe(1);
     expect(audit.driftSummary[SemverDrift.UNKNOWN]).toBe(1);
   });
+
+  it("honors suppressions from package.json (excluded from vulnCount, still emitted)", async () => {
+    const { registry, vuln } = makeClients();
+    const audit = await auditProject(discoverOne(fx("audit-suppressed")), registry, vuln, {});
+    const mm = audit.deps.find((d) => d.dep.name === "minimist")!;
+    expect(mm.vulnerabilities.length).toBe(0);            // suppressed out of the active list
+    expect(mm.suppressedVulnerabilities?.length).toBe(1); // still recorded
+    expect(audit.vulnCount).toBe(0);
+    expect(audit.suppressedCount).toBe(1);
+  });
 });

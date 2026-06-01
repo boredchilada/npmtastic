@@ -1,0 +1,5 @@
+{
+  "name": "audit-suppressed",
+  "dependencies": { "left-pad": "^1.0.0", "minimist": "1.2.0" },
+  "npmtastic": { "suppressions": [{ "package": "minimist", "reason": "accepted" }] }
+}

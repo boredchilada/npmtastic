@@ -4,6 +4,7 @@ import { PinStatus, SemverDrift } from "./models.js";
 import type { PackageMeta, ReleaseInfo } from "./models.js";
 import { collectDeps } from "./parsing.js";
 import { computeMinSafeVersion } from "./vulns.js";
+import { loadSuppressions, isSuppressed } from "./suppressions.js";
 import { makeDepAudit, makeProjectAudit } from "./models.js";
 import type { Dep, DepAudit, Project, ProjectAudit } from "./models.js";
 import type { RegistryClient } from "./registry.js";
@@ -134,6 +135,7 @@ export async function auditProject(
 ): Promise<ProjectAudit> {
   const includePre = opts.includePrereleases ?? false;
   const deps = collectDeps(project);
+  const suppressionRules = loadSuppressions(project.root);
 
   const metaMap = await registry.fetchMany(deps.map((d) => d.name));
   const pairs = deps
@@ -153,7 +155,9 @@ export async function auditProject(
     const deprecated =
       meta && current ? (meta.releases.find((r) => r.version === current)?.deprecated ?? null) : null;
     const key = d.resolved && semver.valid(d.resolved) ? `${d.name}@${d.resolved}` : null;
-    const vulnerabilities = key ? (vulnMap.get(key) ?? []) : [];
+    const allVulns = key ? (vulnMap.get(key) ?? []) : [];
+    const vulnerabilities = allVulns.filter((v) => !isSuppressed(suppressionRules, v, d.name));
+    const suppressedVulnerabilities = allVulns.filter((v) => isSuppressed(suppressionRules, v, d.name));
     const minSafeVersion =
       key && vulnerabilities.length > 0 ? computeMinSafeVersion(d.resolved as string, vulnerabilities) : null;
 
@@ -165,6 +169,7 @@ export async function auditProject(
       pinStatus,
       deprecated,
       vulnerabilities,
+      suppressedVulnerabilities,
       minSafeVersion,
       latestReleaseDate: pick.latestReleaseDate,
       latestReleaseAgeDays: ageDays(pick.latestReleaseDate),
@@ -183,6 +188,7 @@ export async function auditProject(
         directNonUrl.length;
 
   const vulnCount = depAudits.reduce((n, a) => n + a.vulnerabilities.length, 0);
+  const suppressedCount = depAudits.reduce((n, a) => n + (a.suppressedVulnerabilities?.length ?? 0), 0);
   const deprecatedCount = depAudits.filter((a) => a.deprecated !== null).length;
   const registryUnreachable = deps.filter((d) => !metaMap.has(d.name)).length;
   const vulnUnreachable = pairs.filter((p) => vuln.unreachable.has(`${p.name}@${p.version}`)).length;
@@ -196,6 +202,6 @@ export async function auditProject(
     registryUnreachable,
     vulnCount,
     vulnUnreachable,
-    suppressedCount: 0,
+    suppressedCount,
   });
 }
