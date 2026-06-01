@@ -12,13 +12,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 const fx = (p: string) => join(here, "fixtures", "hardening", p);
 
 describe("hardening: malformed lockfiles degrade, never throw", () => {
-  it("malformed package-lock.json → collectDeps returns [] (no throw)", () => {
+  it("malformed package-lock.json → falls back to the manifest (no throw)", () => {
     expect(() => collectDeps(discoverOne(fx("malformed-lock")))).not.toThrow();
-    expect(collectDeps(discoverOne(fx("malformed-lock")))).toEqual([]);
+    const deps = collectDeps(discoverOne(fx("malformed-lock")));
+    // lock unparseable → degrade to manifest deps rather than zeroing out
+    expect(deps.map((d) => d.name)).toContain("a");
+    expect(deps.every((d) => d.resolved === null)).toBe(true); // manifest-sourced
   });
-  it("malformed pnpm-lock.yaml → collectDeps returns [] (no throw)", () => {
+  it("malformed pnpm-lock.yaml → falls back to the manifest (no throw)", () => {
     expect(() => collectDeps(discoverOne(fx("malformed-pnpm")))).not.toThrow();
-    expect(collectDeps(discoverOne(fx("malformed-pnpm")))).toEqual([]);
+    expect(collectDeps(discoverOne(fx("malformed-pnpm"))).map((d) => d.name)).toContain("a");
   });
   it("empty lockfile → collectDeps returns [] (no throw)", () => {
     expect(() => collectDeps(discoverOne(fx("empty-lock")))).not.toThrow();
@@ -61,7 +64,8 @@ describe("hardening: malformed berry yarn.lock degrades", () => {
     // Has `__metadata:` so it routes to the berry (YAML) path, but the YAML is invalid.
     writeFileSync(join(d, "yarn.lock"), '__metadata:\n  version: 6\n\n"a@npm:^1": [ unclosed\n');
     expect(() => collectDeps(discoverOne(d))).not.toThrow();
-    expect(collectDeps(discoverOne(d))).toEqual([]);
+    // broken berry lock → degrade to the manifest dep, not zero
+    expect(collectDeps(discoverOne(d)).map((x) => x.name)).toContain("a");
   });
 });
 

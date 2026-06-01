@@ -258,14 +258,21 @@ export function collectDeps(project: Project): Dep[] {
     // → pnpm → yarn). A repo with multiple coexisting locks picks one arbitrarily;
     // Plan 2 may add explicit precedence + a warning for the multi-lock case.
     const lock = lockSources[0]!;
-    const manifestPath = manifestSources[0]?.path ?? null;
-    const declared = manifestPath ? directRangesFromManifest(manifestPath) : null;
-    raw = parseSource(lock).map((d) => {
-      if (!declared) return withDirect(d, true);
-      const declaredRange = declared.get(d.name);
-      if (declaredRange !== undefined) return makeDep({ ...d, range: declaredRange, direct: true });
-      return withDirect(d, false);
-    });
+    const lockDeps = parseSource(lock);
+    if (lockDeps.length === 0) {
+      // Lock present but unparseable/empty (it already logged a warning) — fall
+      // back to the manifest so a broken lockfile doesn't silently zero out deps.
+      raw = manifestSources.flatMap((s) => parseSource(s));
+    } else {
+      const manifestPath = manifestSources[0]?.path ?? null;
+      const declared = manifestPath ? directRangesFromManifest(manifestPath) : null;
+      raw = lockDeps.map((d) => {
+        if (!declared) return withDirect(d, true);
+        const declaredRange = declared.get(d.name);
+        if (declaredRange !== undefined) return makeDep({ ...d, range: declaredRange, direct: true });
+        return withDirect(d, false);
+      });
+    }
   } else {
     raw = manifestSources.flatMap((s) => parseSource(s));
   }
