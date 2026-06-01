@@ -83,3 +83,34 @@ describe("VulnClient", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 });
+
+const NPM_BULK_SAMPLE = {
+  minimist: [
+    { id: 1179, github_advisory_id: "GHSA-min", title: "proto pollution", url: "https://x", vulnerable_versions: "<1.2.6", severity: "high" },
+  ],
+};
+
+describe("VulnClient npm-audit source", () => {
+  it("source=npm-audit matches vulnerable_versions and maps to Vulnerability", async () => {
+    const c = new VulnClient({ cacheDir: mkdtempSync(join(tmpdir(), "ntc-npm-")), ttlSeconds: 3600, source: "npm-audit" });
+    vi.spyOn(c as unknown as { _runNpmAudit: (n: string, v: string) => Promise<unknown> }, "_runNpmAudit").mockResolvedValue(NPM_BULK_SAMPLE);
+    const map = await c.fetchFor([{ name: "minimist", version: "1.2.0" }]);
+    const vulns = map.get("minimist@1.2.0") ?? [];
+    expect(vulns.length).toBe(1);
+    expect(vulns[0]!.id).toBe("GHSA-min");
+  });
+  it("source=npm-audit skips advisories whose range excludes the version", async () => {
+    const c = new VulnClient({ cacheDir: mkdtempSync(join(tmpdir(), "ntc-npm2-")), ttlSeconds: 3600, source: "npm-audit" });
+    vi.spyOn(c as unknown as { _runNpmAudit: (n: string, v: string) => Promise<unknown> }, "_runNpmAudit").mockResolvedValue(NPM_BULK_SAMPLE);
+    const map = await c.fetchFor([{ name: "minimist", version: "1.2.6" }]); // not < 1.2.6
+    expect((map.get("minimist@1.2.6") ?? []).length).toBe(0);
+  });
+  it("source=both unions OSV + npm-audit deduped by id", async () => {
+    const c = new VulnClient({ cacheDir: mkdtempSync(join(tmpdir(), "ntc-both-")), ttlSeconds: 3600, source: "both" });
+    vi.spyOn(c as unknown as { _runOsvQuery: () => Promise<unknown> }, "_runOsvQuery").mockResolvedValue({ vulns: [{ id: "GHSA-min", aliases: [], summary: "osv", affected: [{ ranges: [{ events: [{ fixed: "1.2.6" }] }] }] }] });
+    vi.spyOn(c as unknown as { _runNpmAudit: () => Promise<unknown> }, "_runNpmAudit").mockResolvedValue(NPM_BULK_SAMPLE);
+    const vulns = (await c.fetchFor([{ name: "minimist", version: "1.2.0" }])).get("minimist@1.2.0") ?? [];
+    expect(vulns.length).toBe(1); // same advisory id from both → deduped
+    expect(vulns[0]!.fixedVersions).toContain("1.2.6"); // OSV's fixed version survives the union
+  });
+});

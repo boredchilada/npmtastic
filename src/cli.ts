@@ -108,6 +108,7 @@ Gates (exit 3 on trip; evaluated on unfiltered results):
 Discovery / cache:
   --exclude GLOB         (repeatable) prune directories by basename
   --include-prereleases
+  --source osv|npm-audit|both   vuln data source (default: osv)
   --no-cache | --refresh-cache | --cache-ttl S | --concurrency N
   --quiet                suppress warnings on stderr
 
@@ -135,6 +136,7 @@ async function cmdAudit(args: string[]): Promise<number> {
         "refresh-cache": { type: "boolean" },
         "cache-ttl": { type: "string" },
         concurrency: { type: "string" },
+        source: { type: "string" },
         quiet: { type: "boolean" },
         "no-color": { type: "boolean" },
       },
@@ -147,6 +149,12 @@ async function cmdAudit(args: string[]): Promise<number> {
   if (v.quiet) setQuiet(true);
   if (v.json && v.sarif) {
     error("--json and --sarif are mutually exclusive");
+    return EXIT_ERROR;
+  }
+
+  const source = v.source as string | undefined;
+  if (source && !["osv", "npm-audit", "both"].includes(source)) {
+    error(`invalid --source: ${source} (expected: osv|npm-audit|both)`);
     return EXIT_ERROR;
   }
 
@@ -174,7 +182,11 @@ async function cmdAudit(args: string[]): Promise<number> {
   }
 
   const registry = new RegistryClient({ ttlSeconds, concurrency });
-  const vuln = new VulnClient({ ttlSeconds, concurrency });
+  const vuln = new VulnClient({
+    ttlSeconds,
+    concurrency,
+    ...(source ? { source: source as "osv" | "npm-audit" | "both" } : {}),
+  });
   const includePrereleases = Boolean(v["include-prereleases"]);
 
   const audits: ProjectAudit[] = [];
