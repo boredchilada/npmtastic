@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import semver from "semver";
 import { PinStatus, SemverDrift } from "./models.js";
+import type { PackageMeta, ReleaseInfo } from "./models.js";
 
 export function classifyPinStatus(range: string, url: string | null): PinStatus {
   if (url) return PinStatus.URL;
@@ -61,4 +62,32 @@ export function classifyDrift(current: string | null, latest: string | null): Se
     default:
       return SemverDrift.NONE;
   }
+}
+
+export interface LatestPick {
+  latest: string | null;
+  latestIncludingPrereleases: string | null;
+  latestReleaseDate: string | null;
+}
+
+function maxRelease(releases: readonly ReleaseInfo[]): ReleaseInfo | null {
+  let best: ReleaseInfo | null = null;
+  for (const r of releases) {
+    if (semver.valid(r.version) === null) continue;
+    if (best === null || semver.gt(r.version, best.version)) best = r;
+  }
+  return best;
+}
+
+export function pickLatest(meta: PackageMeta, includePrereleases: boolean): LatestPick {
+  const valid = meta.releases.filter((r) => semver.valid(r.version) !== null);
+  const stable = valid.filter((r) => semver.prerelease(r.version) === null);
+  const latestStable = maxRelease(stable.filter((r) => !r.deprecated)) ?? maxRelease(stable);
+  const latestIncl = maxRelease(valid.filter((r) => !r.deprecated)) ?? maxRelease(valid);
+  const effective = includePrereleases ? latestIncl : latestStable;
+  return {
+    latest: latestStable?.version ?? null,
+    latestIncludingPrereleases: latestIncl?.version ?? null,
+    latestReleaseDate: effective?.uploadTime ?? null,
+  };
 }
