@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
-import { DepSourceKind, makeDep, type Dep, type DepSource } from "./models.js";
+import { DepSourceKind, makeDep, type Dep, type DepSource, type Project } from "./models.js";
 
 const GROUP_TO_KEY: Record<string, string> = {
   default: "dependencies",
@@ -196,4 +196,56 @@ export function parseSource(source: DepSource): Dep[] {
       // lockfile parsers added in later tasks
       return [];
   }
+}
+
+const LOCK_KINDS = new Set([DepSourceKind.NPM_LOCK, DepSourceKind.PNPM_LOCK, DepSourceKind.YARN_LOCK]);
+
+function directNamesFromManifest(manifestPath: string): Set<string> | null {
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(readFileSync(manifestPath, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const names = new Set<string>();
+  for (const key of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+    const section = raw[key];
+    if (section && typeof section === "object") {
+      for (const n of Object.keys(section as Record<string, unknown>)) names.add(canonicalName(n));
+    }
+  }
+  return names;
+}
+
+function withDirect(dep: Dep, direct: boolean): Dep {
+  return makeDep({ ...dep, direct });
+}
+
+export function collectDeps(project: Project): Dep[] {
+  const lockSources = project.sources.filter((s) => LOCK_KINDS.has(s.kind));
+  const manifestSources = project.sources.filter((s) => s.kind === DepSourceKind.MANIFEST);
+
+  let raw: Dep[];
+  if (lockSources.length > 0) {
+    // Prefer a single lock source (npm > pnpm > yarn by source order from discovery).
+    const lock = lockSources[0]!;
+    const manifestPath = manifestSources[0]?.path ?? null;
+    const directNames = manifestPath ? directNamesFromManifest(manifestPath) : null;
+    raw = parseSource(lock).map((d) =>
+      withDirect(d, directNames ? directNames.has(d.name) : true),
+    );
+  } else {
+    raw = manifestSources.flatMap((s) => parseSource(s));
+  }
+
+  // Dedup by (name, resolved ?? range), preserving first-seen order.
+  const seen = new Set<string>();
+  const out: Dep[] = [];
+  for (const d of raw) {
+    const key = `${d.name}@${d.resolved ?? d.range}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(d);
+  }
+  return out;
 }
