@@ -153,7 +153,7 @@ function parseYarnClassic(text: string, source: DepSource): Dep[] {
       pendingName = descriptorName(firstDescriptor);
       continue;
     }
-    const m = line.trim().match(/^version:?\s+"?([^"\s]+)"?$/);
+    const m = line.trim().match(/^version\s+"?([^"\s]+)"?/);
     if (m && pendingName) {
       deps.push(lockDep(pendingName, m[1]!, source));
       pendingName = null;
@@ -193,7 +193,7 @@ export function parseSource(source: DepSource): Dep[] {
     case DepSourceKind.YARN_LOCK:
       return parseYarnLock(source);
     default:
-      // lockfile parsers added in later tasks
+      // exhaustiveness guard: DepSourceKind is closed and all kinds are handled above
       return [];
   }
 }
@@ -227,7 +227,9 @@ export function collectDeps(project: Project): Dep[] {
 
   let raw: Dep[];
   if (lockSources.length > 0) {
-    // Prefer a single lock source (npm > pnpm > yarn by source order from discovery).
+    // Use the first lock source in discovery order (package-lock → npm-shrinkwrap
+    // → pnpm → yarn). A repo with multiple coexisting locks picks one arbitrarily;
+    // Plan 2 may add explicit precedence + a warning for the multi-lock case.
     const lock = lockSources[0]!;
     const manifestPath = manifestSources[0]?.path ?? null;
     const directNames = manifestPath ? directNamesFromManifest(manifestPath) : null;
