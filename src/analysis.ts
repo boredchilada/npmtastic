@@ -22,3 +22,43 @@ export function classifyPinStatus(range: string, url: string | null): PinStatus 
   if (hasLower && !hasUpper) return PinStatus.FLOOR;
   return PinStatus.RANGE;
 }
+
+export function classifyDrift(current: string | null, latest: string | null): SemverDrift {
+  if (!current || !latest) return SemverDrift.UNKNOWN;
+  const cv = semver.valid(current);
+  const lv = semver.valid(latest);
+  if (!cv || !lv) return SemverDrift.UNKNOWN;
+  if (semver.eq(cv, lv)) return SemverDrift.NONE;
+  // Same release core (major.minor.patch) but differing prerelease tags is a
+  // prerelease-level move — semver.diff reports this as "patch", and the
+  // current-ahead shortcut below would otherwise swallow it as NONE.
+  const cp = semver.parse(cv);
+  const lp = semver.parse(lv);
+  if (
+    cp !== null &&
+    lp !== null &&
+    cp.major === lp.major &&
+    cp.minor === lp.minor &&
+    cp.patch === lp.patch &&
+    (cp.prerelease.length > 0 || lp.prerelease.length > 0)
+  ) {
+    return SemverDrift.PRERELEASE;
+  }
+  if (semver.gt(cv, lv)) return SemverDrift.NONE; // current ahead of latest stable
+  const d = semver.diff(cv, lv);
+  switch (d) {
+    case "major":
+    case "premajor":
+      return SemverDrift.MAJOR;
+    case "minor":
+    case "preminor":
+      return SemverDrift.MINOR;
+    case "patch":
+    case "prepatch":
+      return SemverDrift.PATCH;
+    case "prerelease":
+      return SemverDrift.PRERELEASE;
+    default:
+      return SemverDrift.NONE;
+  }
+}
