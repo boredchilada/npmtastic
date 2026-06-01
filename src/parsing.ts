@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { readFileSync } from "node:fs";
+import { parse as parseYaml } from "yaml";
 import { DepSourceKind, makeDep, type Dep, type DepSource } from "./models.js";
 
 const GROUP_TO_KEY: Record<string, string> = {
@@ -99,12 +100,43 @@ function parseNpmLock(source: DepSource): Dep[] {
   return deps;
 }
 
+function splitPnpmKey(key: string): { name: string; version: string } | null {
+  // Strip leading slash (pre-v6) and any peer-deps suffix "(...)".
+  let k = key.startsWith("/") ? key.slice(1) : key;
+  const paren = k.indexOf("(");
+  if (paren !== -1) k = k.slice(0, paren);
+  // name@version, where name may be "@scope/pkg" and may use "/version" (old) or "@version".
+  const at = k.lastIndexOf("@");
+  if (at <= 0) {
+    // old style: name/version
+    const slash = k.lastIndexOf("/");
+    if (slash <= 0) return null;
+    return { name: k.slice(0, slash), version: k.slice(slash + 1) };
+  }
+  return { name: k.slice(0, at), version: k.slice(at + 1) };
+}
+
+function parsePnpmLock(source: DepSource): Dep[] {
+  const raw = parseYaml(readFileSync(source.path, "utf-8")) as Record<string, unknown>;
+  const packages = raw["packages"];
+  if (!packages || typeof packages !== "object") return [];
+  const deps: Dep[] = [];
+  for (const key of Object.keys(packages as Record<string, unknown>)) {
+    const parsed = splitPnpmKey(key);
+    if (!parsed || !parsed.version) continue;
+    deps.push(lockDep(parsed.name, parsed.version, source));
+  }
+  return deps;
+}
+
 export function parseSource(source: DepSource): Dep[] {
   switch (source.kind) {
     case DepSourceKind.MANIFEST:
       return parseManifest(source);
     case DepSourceKind.NPM_LOCK:
       return parseNpmLock(source);
+    case DepSourceKind.PNPM_LOCK:
+      return parsePnpmLock(source);
     default:
       // lockfile parsers added in later tasks
       return [];
