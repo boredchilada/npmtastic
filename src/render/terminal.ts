@@ -8,6 +8,11 @@ function pad(s: string, n: number): string {
   return s.length >= n ? s : s + " ".repeat(n - s.length);
 }
 
+// ASCII-safe truncation for column cells (no box/ellipsis chars, no ANSI inside).
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + "~" : s;
+}
+
 function colorDrift(d: SemverDrift): string {
   switch (d) {
     case SemverDrift.MAJOR:
@@ -53,10 +58,10 @@ function renderTable(p: ProjectAudit): string {
   for (const a of sorted) {
     lines.push(
       "  " +
-        pad(a.dep.name, 28) +
+        pad(truncate(a.dep.name, 27), 28) +
         pad(a.pinStatus, 12) +
-        pad(a.dep.resolved ?? a.dep.range, 14) +
-        pad(a.latest ?? "-", 14) +
+        pad(truncate(a.dep.resolved ?? a.dep.range, 13), 14) +
+        pad(truncate(a.latest ?? "-", 13), 14) +
         padColored(colorDrift(a.drift), a.drift, 12) +
         padColored(cveCell(a), cveCell(a).replace(/\[[0-9;]*m/g, ""), 12) +
         ageCell(a),
@@ -74,7 +79,7 @@ function renderSummary(audits: readonly ProjectAudit[]): string {
     const direct = p.deps.filter((d) => d.dep.direct).length;
     const cveStr = p.vulnCount > 0 ? pc.red(String(p.vulnCount)) : "0";
     lines.push(
-      pad(p.project.name, 28) +
+      pad(truncate(p.project.name, 27), 28) +
         pad(String(p.deps.length), 7) +
         pad(String(direct), 8) +
         pad(score, 9) +
