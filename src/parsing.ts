@@ -225,21 +225,23 @@ export function parseSource(source: DepSource): Dep[] {
 
 const LOCK_KINDS = new Set([DepSourceKind.NPM_LOCK, DepSourceKind.PNPM_LOCK, DepSourceKind.YARN_LOCK]);
 
-function directNamesFromManifest(manifestPath: string): Set<string> | null {
+function directRangesFromManifest(manifestPath: string): Map<string, string> | null {
   let raw: Record<string, unknown>;
   try {
     raw = JSON.parse(readText(manifestPath)) as Record<string, unknown>;
   } catch {
     return null;
   }
-  const names = new Set<string>();
+  const ranges = new Map<string, string>();
   for (const key of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
     const section = raw[key];
     if (section && typeof section === "object") {
-      for (const n of Object.keys(section as Record<string, unknown>)) names.add(canonicalName(n));
+      for (const [n, spec] of Object.entries(section as Record<string, unknown>)) {
+        if (typeof spec === "string") ranges.set(canonicalName(n), spec);
+      }
     }
   }
-  return names;
+  return ranges;
 }
 
 function withDirect(dep: Dep, direct: boolean): Dep {
@@ -257,10 +259,13 @@ export function collectDeps(project: Project): Dep[] {
     // Plan 2 may add explicit precedence + a warning for the multi-lock case.
     const lock = lockSources[0]!;
     const manifestPath = manifestSources[0]?.path ?? null;
-    const directNames = manifestPath ? directNamesFromManifest(manifestPath) : null;
-    raw = parseSource(lock).map((d) =>
-      withDirect(d, directNames ? directNames.has(d.name) : true),
-    );
+    const declared = manifestPath ? directRangesFromManifest(manifestPath) : null;
+    raw = parseSource(lock).map((d) => {
+      if (!declared) return withDirect(d, true);
+      const declaredRange = declared.get(d.name);
+      if (declaredRange !== undefined) return makeDep({ ...d, range: declaredRange, direct: true });
+      return withDirect(d, false);
+    });
   } else {
     raw = manifestSources.flatMap((s) => parseSource(s));
   }
