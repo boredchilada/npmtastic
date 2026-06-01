@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { readdirSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
 import { DepSourceKind, makeProject, type DepSource, type Project } from "./models.js";
+import { readText } from "./fsutil.js";
+import { warn } from "./logging.js";
 
 const ALWAYS_SKIP = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
 
@@ -27,8 +29,9 @@ function readManifest(dir: string): Record<string, unknown> | null {
   const p = join(dir, "package.json");
   if (!existsSync(p)) return null;
   try {
-    return JSON.parse(readFileSync(p, "utf-8")) as Record<string, unknown>;
-  } catch {
+    return JSON.parse(readText(p)) as Record<string, unknown>;
+  } catch (e) {
+    warn(`could not parse ${p}: ${(e as Error).message}`);
     return null;
   }
 }
@@ -58,8 +61,10 @@ function buildProject(dir: string, manifest: Record<string, unknown>): Project {
 }
 
 export function discoverOne(root: string): Project {
+  const manifestPath = join(root, "package.json");
+  if (!existsSync(manifestPath)) throw new Error(`no package.json at ${root}`);
   const manifest = readManifest(root);
-  if (!manifest) throw new Error(`no package.json at ${root}`);
+  if (!manifest) throw new Error(`malformed package.json at ${root}`);
   return buildProject(root, manifest);
 }
 

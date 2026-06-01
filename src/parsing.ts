@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { DepSourceKind, makeDep, type Dep, type DepSource, type Project } from "./models.js";
+import { readText } from "./fsutil.js";
+import { warn } from "./logging.js";
 
 const GROUP_TO_KEY: Record<string, string> = {
   default: "dependencies",
@@ -24,7 +25,13 @@ function classifySpec(spec: string): { range: string; url: string | null } {
 }
 
 function parseManifest(source: DepSource): Dep[] {
-  const raw = JSON.parse(readFileSync(source.path, "utf-8")) as Record<string, unknown>;
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(readText(source.path)) as Record<string, unknown>;
+  } catch (e) {
+    warn(`could not parse ${source.path}: ${(e as Error).message}`);
+    return [];
+  }
   const key = GROUP_TO_KEY[source.group] ?? "dependencies";
   const section = raw[key];
   if (!section || typeof section !== "object") return [];
@@ -69,7 +76,13 @@ function lockDep(name: string, version: string, source: DepSource): Dep {
 }
 
 function parseNpmLock(source: DepSource): Dep[] {
-  const raw = JSON.parse(readFileSync(source.path, "utf-8")) as Record<string, unknown>;
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(readText(source.path)) as Record<string, unknown>;
+  } catch (e) {
+    warn(`could not parse ${source.path}: ${(e as Error).message}`);
+    return [];
+  }
   const deps: Dep[] = [];
 
   const packages = raw["packages"] as Record<string, { version?: string }> | undefined;
@@ -117,7 +130,14 @@ function splitPnpmKey(key: string): { name: string; version: string } | null {
 }
 
 function parsePnpmLock(source: DepSource): Dep[] {
-  const raw = parseYaml(readFileSync(source.path, "utf-8")) as Record<string, unknown>;
+  let raw: Record<string, unknown>;
+  try {
+    raw = parseYaml(readText(source.path)) as Record<string, unknown>;
+  } catch (e) {
+    warn(`could not parse ${source.path}: ${(e as Error).message}`);
+    return [];
+  }
+  if (!raw || typeof raw !== "object") return [];
   const packages = raw["packages"];
   if (!packages || typeof packages !== "object") return [];
   const deps: Dep[] = [];
@@ -177,7 +197,13 @@ function parseYarnBerry(text: string, source: DepSource): Dep[] {
 }
 
 function parseYarnLock(source: DepSource): Dep[] {
-  const text = readFileSync(source.path, "utf-8");
+  let text: string;
+  try {
+    text = readText(source.path);
+  } catch (e) {
+    warn(`could not parse ${source.path}: ${(e as Error).message}`);
+    return [];
+  }
   const isBerry = /^\s*__metadata:/m.test(text);
   return isBerry ? parseYarnBerry(text, source) : parseYarnClassic(text, source);
 }
@@ -203,7 +229,7 @@ const LOCK_KINDS = new Set([DepSourceKind.NPM_LOCK, DepSourceKind.PNPM_LOCK, Dep
 function directNamesFromManifest(manifestPath: string): Set<string> | null {
   let raw: Record<string, unknown>;
   try {
-    raw = JSON.parse(readFileSync(manifestPath, "utf-8")) as Record<string, unknown>;
+    raw = JSON.parse(readText(manifestPath)) as Record<string, unknown>;
   } catch {
     return null;
   }
