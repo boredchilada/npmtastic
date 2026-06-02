@@ -134,3 +134,10 @@ export function makeProjectAudit(p: ProjectAudit): ProjectAudit {
     driftSummary: Object.freeze({ ...p.driftSummary }),
   });
 }
+
+export interface UpdateChange {
+  readonly name: string; // canonical
+  readonly from: string; // old spec
+  readonly to: string; // new exact version
+  readonly note: string | null; // e.g. "CVE floor: GHSA-..."
+}
