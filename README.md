@@ -20,10 +20,13 @@ It is the npm-side counterpart to [piptastic](https://github.com/boredchilada/pi
   against the npm registry's audit endpoint), plus the **minimum safe version** that
   fixes them.
 
-It is **read-only**. It reads your manifests and lockfiles and queries public APIs; it
-never writes to the projects it audits, runs a daemon, or keeps state between runs. One
-broken project won't abort a scan: if a file fails to parse or a request fails, npmtastic
-logs a warning to stderr and moves on, marking that dependency or project unreachable.
+`audit` is **read-only**: it reads your manifests and lockfiles, queries public APIs, and
+never writes to the projects it scans. Two opt-in write commands round it out:
+**`update`** pins and upgrades dependencies (with a backup, an isolated test install, and
+rollback), and **`bootstrap`** reconstructs a `package.json` from a lockfile or
+`node_modules`. One broken project won't abort a scan: if a file fails to parse or a
+request fails, npmtastic logs a warning to stderr and moves on, marking that dependency or
+project unreachable.
 
 Supported inputs: `package.json` (dependencies / devDependencies / peerDependencies /
 optionalDependencies) and `package-lock.json` / `npm-shrinkwrap.json` (v1, v2, v3),
@@ -126,7 +129,60 @@ npmtastic audit . --sarif > npmtastic.sarif
 | --- | --- |
 | `0` | OK. |
 | `1` | Operational error (bad arguments, path not found, `--json`+`--sarif`). |
+| `2` | `update` rolled back: a test install failed and the changes were reverted. |
 | `3` | A policy gate tripped (`--fail-on-*`). |
+
+## `update` (pin and upgrade)
+
+Rewrites dependency versions in `package.json`, with a backup, an isolated test install,
+and rollback on failure. Two modes:
+
+- Default: bump dependencies that are already pinned exact to the latest stable version,
+  raising to the minimum safe version when the current one has a known CVE.
+- `--pin`: convert loose ranges on direct dependencies (`^1.3.0`) to the exact resolved
+  version, again raising past any CVE.
+
+```sh
+npmtastic update <path> [options]
+```
+
+| Flag | Description |
+| --- | --- |
+| `--pin` | Convert direct-dep ranges to the exact resolved version. |
+| `--packages a,b,c` | Limit to these dependencies. |
+| `--dry-run` | Show the changes, write nothing. |
+| `--no-test` | Skip the isolated install check (and its rollback). |
+| `--exclude GLOB` | Prune directories by basename when scanning a tree. |
+| `--source`, cache flags, `--quiet` | Same as `audit`. |
+
+It changes only the version strings, leaving the rest of your `package.json` byte-for-byte
+intact, and refuses to touch a manifest it can't parse. Before writing it copies the
+original to `.npmtastic_backups/`; after writing it validates the result with an install
+in a throwaway temp directory (your real `node_modules` is never touched) and restores the
+backup if that install fails (exit code `2`). Accepted-risk CVEs (see Suppressions) never
+drive a bump.
+
+## `bootstrap` (reconstruct a package.json)
+
+Rebuilds a `package.json` when it is missing, empty, or unparseable but the project is
+installed. Prints to stdout by default. Local-only; no network.
+
+```sh
+npmtastic bootstrap <path> [options]
+```
+
+By default it reconstructs from the lockfile's root entry (`package-lock.json`'s
+`packages[""]`, or `pnpm-lock.yaml`'s `importers["."]`), recovering the real direct
+dependencies, their groups, and their declared ranges. Non-installable specifiers
+(`workspace:`, `link:`, and the like) are skipped with a warning. With no usable lockfile
+(yarn, npm lockfileVersion 1, or none), it falls back to freezing `node_modules`.
+
+| Flag | Description |
+| --- | --- |
+| `--from-node-modules` | Freeze installed top-level `node_modules` at exact versions instead. Includes hoisted transitive deps, so review before keeping. |
+| `--write` | Write `package.json` (refuses to overwrite an existing one without `--force`). |
+| `--force` | Overwrite an existing `package.json` (it is backed up to `.npmtastic_backups/` first). |
+| `--quiet` | Suppress warnings on stderr. |
 
 ## Suppressions
 

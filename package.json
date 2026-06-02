@@ -17,7 +17,9 @@
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dev": "tsx src/bin.ts"
+    "dev": "tsx src/bin.ts",
+    "prepare": "tsc",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "semver": "^7.6.0",

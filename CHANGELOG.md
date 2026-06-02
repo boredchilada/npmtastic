@@ -25,5 +25,15 @@ Initial version.
 - CI gates (`--fail-on-drift`, `--fail-on-vuln`, `--fail-on-age`), display
   filters (`--vulnerable-only`, `--drift-min`), on-disk caching, and accepted-risk
   suppressions declared in `package.json` under `npmtastic.suppressions`.
+- `update` command: rewrite `package.json` dependency versions with a CVE-aware
+  floor. Default mode bumps already-exact pins to latest; `--pin` converts direct-dep
+  ranges to the exact resolved version. Surgical edits, refuses unparseable manifests,
+  backs up before writing, validates with an isolated test install, and rolls back on
+  failure (exit code 2). Flags: `--pin`, `--packages`, `--dry-run`, `--no-test`,
+  `--exclude`.
+- `bootstrap` command: reconstruct a `package.json` from the lockfile root
+  (`packages[""]` / `importers["."]`, skipping non-installable specifiers) or, with
+  `--from-node-modules`, freeze installed `node_modules` at exact versions. Prints to
+  stdout by default; `--write` / `--force` apply it with a backup.
 - Graceful degradation: malformed or non-UTF-8 manifests/lockfiles, and registry
   or OSV failures, log a warning and are skipped rather than aborting the scan.
