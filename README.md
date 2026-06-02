@@ -1,29 +1,29 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 # npmtastic
 
-A Node.js dependency auditor — pin posture, registry drift, and known CVEs.
+A Node.js dependency auditor that reports pin posture, registry drift, and known CVEs.
 
-It is the npm-ecosystem counterpart to [piptastic](https://github.com/boredchilada/piptastic)
-(the Python dependency auditor) and mirrors its design and conventions.
+It is the npm-side counterpart to [piptastic](https://github.com/boredchilada/piptastic)
+(the Python dependency auditor) and follows the same design and conventions.
 
 ## What it does
 
 `npmtastic` walks a directory tree, finds Node projects (any directory with a
 `package.json`), parses the manifest and lockfiles, and reports, per dependency:
 
-- **Pin posture** — `pinned` / `compatible` / `range` / `floor` / `unpinned` / `url`,
-  derived from the declared range's *shape* (e.g. `1.2.3` is pinned, `^1.2.3`/`~1.2.3`
+- **Pin posture**: `pinned` / `compatible` / `range` / `floor` / `unpinned` / `url`,
+  read from the shape of the declared range (so `1.2.3` is pinned, `^1.2.3` and `~1.2.3`
   are compatible, `>=1.2.3` is a floor).
-- **Drift** against the npm registry — `none` / `prerelease` / `patch` / `minor` /
-  `major` (or `unknown` when the registry can't be reached or the version is unpinned).
-- **Known CVEs** via the [OSV.dev](https://osv.dev) database (optionally cross-checked
-  with the npm registry's audit endpoint), plus the **minimum safe version** that
-  resolves them.
+- **Drift** against the npm registry: `none` / `prerelease` / `patch` / `minor` /
+  `major`, or `unknown` when the registry can't be reached or the version isn't pinned.
+- **Known CVEs** from the [OSV.dev](https://osv.dev) database (optionally cross-checked
+  against the npm registry's audit endpoint), plus the **minimum safe version** that
+  fixes them.
 
-It is **read-only**: no install, no writes, no daemon, no shared state. Every run is
-self-contained. A single broken project never aborts a tree scan — parse and network
-failures degrade gracefully (a warning on stderr; the affected dep/project is skipped
-or marked unreachable).
+It is **read-only**. It reads your manifests and lockfiles and queries public APIs; it
+never writes to the projects it audits, runs a daemon, or keeps state between runs. One
+broken project won't abort a scan: if a file fails to parse or a request fails, npmtastic
+logs a warning to stderr and moves on, marking that dependency or project unreachable.
 
 Supported inputs: `package.json` (dependencies / devDependencies / peerDependencies /
 optionalDependencies) and `package-lock.json` / `npm-shrinkwrap.json` (v1, v2, v3),
@@ -92,7 +92,7 @@ npmtastic audit . --sarif > npmtastic.sarif
 | --- | --- |
 | `--source osv\|npm-audit\|both` | CVE source. Default `osv`. `both` unions OSV with the npm registry audit endpoint (deduped by advisory id). |
 
-**Filters** (affect the display only — never the gates)
+**Filters** (these change what's displayed, not what the gates evaluate)
 
 | Flag | Description |
 | --- | --- |
@@ -145,9 +145,9 @@ Accepted-risk advisories are declared in the project's `package.json`:
 
 A rule matches by advisory `id` (or one of its aliases) and/or `package` name. When both
 are given, both must match. Suppressed advisories are **excluded** from `vulnCount`, the
-`--fail-on-vuln` gate, and the minimum-safe-version calculation, but are still emitted —
-in JSON under `suppressedVulnerabilities`, and in SARIF as results carrying
-`suppressions: [{ "kind": "external" }]`.
+`--fail-on-vuln` gate, and the minimum-safe-version calculation. They are still
+reported, though: in JSON under `suppressedVulnerabilities`, and in SARIF as results
+carrying `suppressions: [{ "kind": "external" }]`.
 
 ## JSON output
 

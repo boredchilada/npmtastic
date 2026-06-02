@@ -16,6 +16,6 @@ repository's **Security** tab). Reports are acknowledged as soon as practical.
 
 npmtastic is read-only: it reads `package.json` and lockfiles and queries public
 APIs (the npm registry and [OSV.dev](https://osv.dev)). It does not modify the
-projects it audits, run package scripts, or execute installed code. Reports that
-demonstrate a way to make it write, execute, or exfiltrate data — including via
-crafted/untrusted `package.json` or lockfile input — are in scope and welcome.
+projects it audits, run package scripts, or execute installed code. If you find a way
+to make it write, execute, or leak data (for example through a crafted or untrusted
+`package.json` or lockfile), that is in scope and worth reporting.
