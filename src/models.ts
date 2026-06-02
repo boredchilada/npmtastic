@@ -149,3 +149,9 @@ export interface UpdateResult {
   readonly tested: boolean;
   readonly testPassed: boolean;
 }
+
+export interface BootstrapResult {
+  readonly manifest: Record<string, unknown>;
+  readonly source: "npm-lock" | "pnpm-lock" | "node-modules";
+  readonly warnings: readonly string[];
+}
