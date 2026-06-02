@@ -119,7 +119,8 @@ Usage: npmtastic update <path> [options]   (writes package.json)
   --pin                  convert direct-dep ranges to exact at the resolved version
   --packages a,b,c       limit to these dependencies
   --dry-run              show changes, write nothing
-  --no-test              skip the isolated install check
+  --no-test              skip the isolated install check (skips the install check and rollback)
+  --exclude GLOB         (repeatable) prune directories by basename
   --source osv|npm-audit|both   vuln data source (default: osv)
   --no-cache | --refresh-cache | --cache-ttl S | --concurrency N
   --quiet                suppress warnings on stderr
@@ -243,6 +244,7 @@ async function cmdUpdate(args: string[]): Promise<number> {
         packages: { type: "string" },
         "dry-run": { type: "boolean" },
         "no-test": { type: "boolean" },
+        exclude: { type: "string", multiple: true },
         source: { type: "string" },
         "no-cache": { type: "boolean" },
         "refresh-cache": { type: "boolean" },
@@ -270,11 +272,12 @@ async function cmdUpdate(args: string[]): Promise<number> {
   const ttlSeconds = v["no-cache"] || v["refresh-cache"] ? 0 : v["cache-ttl"] ? Number.parseInt(v["cache-ttl"], 10) : 3600;
   const concurrency = v.concurrency ? Number.parseInt(v.concurrency, 10) : 8;
   const packages = v.packages ? (v.packages as string).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+  const exclude = (v.exclude as string[] | undefined) ?? [];
 
   const isProject = existsSync(join(path, "package.json"));
   let projects;
   try {
-    projects = isProject ? [discoverOne(path)] : discoverTree(path, { exclude: [] });
+    projects = isProject ? [discoverOne(path)] : discoverTree(path, { exclude });
   } catch (e) {
     error((e as Error).message);
     return EXIT_ERROR;

@@ -77,7 +77,7 @@ export interface TargetInput {
 }
 
 function vulnNote(vulns: readonly Vulnerability[]): string {
-  const ids = vulns.slice(0, 2).map((v) => v.id).join(", ");
+  const ids = vulns.slice(0, 2).map((v) => v.id).filter(Boolean).join(", ") || "unspecified";
   return vulns.length > 2 ? `${ids}, +${vulns.length - 2}` : ids;
 }
 
@@ -206,6 +206,29 @@ export async function updateProject(
   for (const s of skipped) warn(`update: could not locate "${s.rawName}" in ${manifestPath}; left unchanged`);
   const changes = applied.map(editToChange);
 
+  // Safety: the surgical edit is textual — confirm it produced valid JSON and that
+  // every applied edit actually landed on the right dependency before we touch disk.
+  if (applied.length > 0) {
+    let reparsed: Record<string, unknown>;
+    try {
+      reparsed = JSON.parse(newText) as Record<string, unknown>;
+    } catch {
+      error(`update: rewrite produced invalid JSON for ${manifestPath}; aborting (no changes written)`);
+      return empty;
+    }
+    const GROUPS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
+    for (const e of applied) {
+      const landed = GROUPS.some((g) => {
+        const sec = reparsed[g];
+        return sec !== null && typeof sec === "object" && (sec as Record<string, unknown>)[e.rawName] === e.newVersion;
+      });
+      if (!landed) {
+        error(`update: post-edit verification failed for "${e.rawName}" in ${manifestPath}; aborting (no changes written)`);
+        return empty;
+      }
+    }
+  }
+
   if (opts.dryRun) {
     return { manifestPath, backupPath: null, changes, tested: false, testPassed: true };
   }
@@ -221,8 +244,15 @@ export async function updateProject(
     const install = opts.installer ?? testInstall;
     testPassed = await install(project.root, newText);
     if (!testPassed) {
-      warn(`update: test install failed; restoring ${manifestPath}`);
-      writeFileSync(manifestPath, rawText);
+      try {
+        copyFileSync(backupPath, manifestPath);
+        warn(`update: test install failed; restored ${manifestPath} from ${backupPath}`);
+      } catch (e) {
+        error(
+          `update: test install failed AND automatic restore failed — ${manifestPath} is left MODIFIED. ` +
+            `Restore it manually from ${backupPath}: ${(e as Error).message}`,
+        );
+      }
     }
   }
   return { manifestPath, backupPath, changes, tested, testPassed };

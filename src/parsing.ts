@@ -225,19 +225,19 @@ export function parseSource(source: DepSource): Dep[] {
 
 const LOCK_KINDS = new Set([DepSourceKind.NPM_LOCK, DepSourceKind.PNPM_LOCK, DepSourceKind.YARN_LOCK]);
 
-function directRangesFromManifest(manifestPath: string): Map<string, string> | null {
+function directRangesFromManifest(manifestPath: string): Map<string, { range: string; rawKey: string }> | null {
   let raw: Record<string, unknown>;
   try {
     raw = JSON.parse(readText(manifestPath)) as Record<string, unknown>;
   } catch {
     return null;
   }
-  const ranges = new Map<string, string>();
+  const ranges = new Map<string, { range: string; rawKey: string }>();
   for (const key of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
     const section = raw[key];
     if (section && typeof section === "object") {
       for (const [n, spec] of Object.entries(section as Record<string, unknown>)) {
-        if (typeof spec === "string") ranges.set(canonicalName(n), spec);
+        if (typeof spec === "string") ranges.set(canonicalName(n), { range: spec, rawKey: n });
       }
     }
   }
@@ -269,7 +269,9 @@ export function collectDeps(project: Project): Dep[] {
       raw = lockDeps.map((d) => {
         if (!declared) return withDirect(d, true);
         const declaredRange = declared.get(d.name);
-        if (declaredRange !== undefined) return makeDep({ ...d, range: declaredRange, direct: true });
+        if (declaredRange !== undefined) {
+          return makeDep({ ...d, range: declaredRange.range, rawName: declaredRange.rawKey, direct: true });
+        }
         return withDirect(d, false);
       });
     }
