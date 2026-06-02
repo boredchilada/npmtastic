@@ -8,9 +8,9 @@ npmtastic is pre-1.0. Only the latest released version receives security fixes.
 
 Please report security issues **privately**, not in a public issue.
 
-Use GitHub's private vulnerability reporting: the **"Report a vulnerability"**
-button under this repository's **Security** tab. Reports are acknowledged as soon
-as practical.
+Email **security@cyfar.ca** with the details. You may also use GitHub's private
+vulnerability reporting (the **"Report a vulnerability"** button under this
+repository's **Security** tab). Reports are acknowledged as soon as practical.
 
 ## Scope
 

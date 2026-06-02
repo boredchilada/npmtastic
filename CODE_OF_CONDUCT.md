@@ -28,9 +28,8 @@ Examples of unacceptable behavior:
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the project maintainer privately via GitHub's private reporting on
-this repository. All complaints will be reviewed and investigated promptly and
-fairly. Maintainers are responsible for clarifying and enforcing these standards
+reported to the project maintainer privately at **security@cyfar.ca**. All
+complaints will be reviewed and investigated promptly and fairly. Maintainers are responsible for clarifying and enforcing these standards
 and may remove, edit, or reject contributions that do not align with this Code of
 Conduct.
 
