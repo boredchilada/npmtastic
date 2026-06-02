@@ -9,4 +9,5 @@ export { renderAuditJson, SCHEMA_VERSION } from "./render/json.js";
 export { renderSarif } from "./render/sarif.js";
 export { renderTerminal } from "./render/terminal.js";
 export { updateProject } from "./update.js";
+export { bootstrapProject } from "./bootstrap.js";
 export { main } from "./cli.js";

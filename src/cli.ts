@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { parseArgs } from "node:util";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { discoverOne, discoverTree } from "./discovery.js";
 import { auditProject } from "./analysis.js";
@@ -12,6 +12,9 @@ import { renderTerminal, type View } from "./render/terminal.js";
 import { setQuiet, warn, error } from "./logging.js";
 import { SemverDrift, makeProjectAudit, type ProjectAudit } from "./models.js";
 import { updateProject } from "./update.js";
+import { bootstrapProject } from "./bootstrap.js";
+import { backupManifest } from "./backup.js";
+import { readText } from "./fsutil.js";
 import type { UpdateResult } from "./models.js";
 
 export const EXIT_OK = 0;
@@ -125,6 +128,12 @@ Usage: npmtastic update <path> [options]   (writes package.json)
   --no-cache | --refresh-cache | --cache-ttl S | --concurrency N
   --quiet                suppress warnings on stderr
   (exit 2 if a test install failed and changes were rolled back)
+
+Usage: npmtastic bootstrap <path> [options]   (reconstruct a package.json)
+  (prints to stdout by default; reads the lockfile root, or node_modules)
+  --from-node-modules    freeze installed top-level node_modules (exact pins) instead
+  --write                write package.json (refuses to overwrite without --force)
+  --force                overwrite an existing package.json (backs it up first)
 
   -h, --help    -v, --version
 `;
@@ -314,6 +323,59 @@ async function cmdUpdate(args: string[]): Promise<number> {
   return rolledBack ? EXIT_ROLLBACK : EXIT_OK;
 }
 
+async function cmdBootstrap(args: string[]): Promise<number> {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args,
+      allowPositionals: true,
+      options: {
+        "from-node-modules": { type: "boolean" },
+        write: { type: "boolean" },
+        force: { type: "boolean" },
+        quiet: { type: "boolean" },
+      },
+    });
+  } catch (e) {
+    error((e as Error).message);
+    return EXIT_ERROR;
+  }
+  const v = parsed.values;
+  if (v.quiet) setQuiet(true);
+  const path = parsed.positionals[0] ?? ".";
+  if (!existsSync(path)) {
+    error(`path not found: ${path}`);
+    return EXIT_ERROR;
+  }
+
+  const res = bootstrapProject(path, { fromNodeModules: Boolean(v["from-node-modules"]) });
+  if (!res) {
+    error(`bootstrap: no lockfile or node_modules found under ${path}; nothing to reconstruct`);
+    return EXIT_ERROR;
+  }
+  for (const w of res.warnings) warn(w);
+  const text = JSON.stringify(res.manifest, null, 2) + "\n";
+
+  if (!v.write) {
+    process.stdout.write(text);
+    return EXIT_OK;
+  }
+
+  const manifestPath = join(path, "package.json");
+  if (existsSync(manifestPath)) {
+    if (!v.force) {
+      error(`bootstrap: ${manifestPath} already exists; pass --force to overwrite (the existing file is backed up first)`);
+      return EXIT_ERROR;
+    }
+    const existing = readText(manifestPath);
+    const backup = backupManifest(manifestPath, path, existing);
+    warn(`bootstrap: backed up existing package.json to ${backup}`);
+  }
+  writeFileSync(manifestPath, text);
+  process.stdout.write(`bootstrap: wrote ${manifestPath} (source: ${res.source})\n`);
+  return EXIT_OK;
+}
+
 export async function main(argv: string[]): Promise<number> {
   const sub = argv[0];
   if (sub === undefined || sub === "-h" || sub === "--help") {
@@ -326,6 +388,7 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (sub === "audit") return cmdAudit(argv.slice(1));
   if (sub === "update") return cmdUpdate(argv.slice(1));
+  if (sub === "bootstrap") return cmdBootstrap(argv.slice(1));
   error(`unknown command: ${sub} (try: npmtastic --help)`);
   return EXIT_ERROR;
 }
