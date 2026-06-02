@@ -8,4 +8,5 @@ export { VulnClient, computeMinSafeVersion } from "./vulns.js";
 export { renderAuditJson, SCHEMA_VERSION } from "./render/json.js";
 export { renderSarif } from "./render/sarif.js";
 export { renderTerminal } from "./render/terminal.js";
+export { updateProject } from "./update.js";
 export { main } from "./cli.js";

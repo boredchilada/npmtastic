@@ -11,9 +11,12 @@ import { renderSarif } from "./render/sarif.js";
 import { renderTerminal, type View } from "./render/terminal.js";
 import { setQuiet, warn, error } from "./logging.js";
 import { SemverDrift, makeProjectAudit, type ProjectAudit } from "./models.js";
+import { updateProject } from "./update.js";
+import type { UpdateResult } from "./models.js";
 
 export const EXIT_OK = 0;
 export const EXIT_ERROR = 1;
+export const EXIT_ROLLBACK = 2;
 export const EXIT_GATE = 3;
 
 const VERSION = "0.1.0"; // keep in sync with package.json
@@ -111,6 +114,16 @@ Discovery / cache:
   --source osv|npm-audit|both   vuln data source (default: osv)
   --no-cache | --refresh-cache | --cache-ttl S | --concurrency N
   --quiet                suppress warnings on stderr
+
+Usage: npmtastic update <path> [options]   (writes package.json)
+  --pin                  convert direct-dep ranges to exact at the resolved version
+  --packages a,b,c       limit to these dependencies
+  --dry-run              show changes, write nothing
+  --no-test              skip the isolated install check
+  --source osv|npm-audit|both   vuln data source (default: osv)
+  --no-cache | --refresh-cache | --cache-ttl S | --concurrency N
+  --quiet                suppress warnings on stderr
+  (exit 2 if a test install failed and changes were rolled back)
 
   -h, --help    -v, --version
 `;
@@ -219,6 +232,85 @@ async function cmdAudit(args: string[]): Promise<number> {
   return tripped ? EXIT_GATE : EXIT_OK;
 }
 
+async function cmdUpdate(args: string[]): Promise<number> {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args,
+      allowPositionals: true,
+      options: {
+        pin: { type: "boolean" },
+        packages: { type: "string" },
+        "dry-run": { type: "boolean" },
+        "no-test": { type: "boolean" },
+        source: { type: "string" },
+        "no-cache": { type: "boolean" },
+        "refresh-cache": { type: "boolean" },
+        "cache-ttl": { type: "string" },
+        concurrency: { type: "string" },
+        quiet: { type: "boolean" },
+      },
+    });
+  } catch (e) {
+    error((e as Error).message);
+    return EXIT_ERROR;
+  }
+  const v = parsed.values;
+  if (v.quiet) setQuiet(true);
+  const path = parsed.positionals[0] ?? ".";
+  if (!existsSync(path)) {
+    error(`path not found: ${path}`);
+    return EXIT_ERROR;
+  }
+  const source = v.source as string | undefined;
+  if (source && !["osv", "npm-audit", "both"].includes(source)) {
+    error(`invalid --source: ${source}`);
+    return EXIT_ERROR;
+  }
+  const ttlSeconds = v["no-cache"] || v["refresh-cache"] ? 0 : v["cache-ttl"] ? Number.parseInt(v["cache-ttl"], 10) : 3600;
+  const concurrency = v.concurrency ? Number.parseInt(v.concurrency, 10) : 8;
+  const packages = v.packages ? (v.packages as string).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+
+  const isProject = existsSync(join(path, "package.json"));
+  let projects;
+  try {
+    projects = isProject ? [discoverOne(path)] : discoverTree(path, { exclude: [] });
+  } catch (e) {
+    error((e as Error).message);
+    return EXIT_ERROR;
+  }
+
+  const registry = new RegistryClient({ ttlSeconds, concurrency });
+  const vuln = new VulnClient({ ttlSeconds, concurrency, ...(source ? { source: source as "osv" | "npm-audit" | "both" } : {}) });
+
+  let rolledBack = false;
+  for (const project of projects) {
+    let res: UpdateResult;
+    try {
+      res = await updateProject(project, registry, vuln, {
+        pin: Boolean(v.pin),
+        test: !v["no-test"],
+        dryRun: Boolean(v["dry-run"]),
+        ...(packages ? { packages } : {}),
+      });
+    } catch (e) {
+      warn(`skipping ${project.name}: ${(e as Error).message}`);
+      continue;
+    }
+    const tag = v["dry-run"] ? " (dry run)" : res.tested ? (res.testPassed ? " (install ok)" : " (rolled back)") : "";
+    if (res.changes.length === 0) {
+      process.stdout.write(`${project.name}: no changes${tag}\n`);
+    } else {
+      process.stdout.write(`${project.name}: ${res.changes.length} change(s)${tag}\n`);
+      for (const c of res.changes) {
+        process.stdout.write(`  ${c.name}  ${c.from} -> ${c.to}${c.note ? `  [${c.note}]` : ""}\n`);
+      }
+    }
+    if (res.tested && !res.testPassed) rolledBack = true;
+  }
+  return rolledBack ? EXIT_ROLLBACK : EXIT_OK;
+}
+
 export async function main(argv: string[]): Promise<number> {
   const sub = argv[0];
   if (sub === undefined || sub === "-h" || sub === "--help") {
@@ -230,6 +322,7 @@ export async function main(argv: string[]): Promise<number> {
     return EXIT_OK;
   }
   if (sub === "audit") return cmdAudit(argv.slice(1));
+  if (sub === "update") return cmdUpdate(argv.slice(1));
   error(`unknown command: ${sub} (try: npmtastic --help)`);
   return EXIT_ERROR;
 }
