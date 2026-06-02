@@ -78,11 +78,18 @@ export function parseNpmAudit(raw: unknown, name: string, version: string): Vuln
         continue; // unparseable range → can't confirm → skip (avoid false positives)
       }
     }
-    const ghsa = typeof o["github_advisory_id"] === "string" ? (o["github_advisory_id"] as string) : null;
+    // Prefer a GHSA id so npm-audit results dedupe against OSV (which keys on GHSA).
+    // The npm bulk endpoint usually omits a github_advisory_id field but embeds the
+    // GHSA in the advisory `url` (https://github.com/advisories/GHSA-...).
+    const urlStr = typeof o["url"] === "string" ? (o["url"] as string) : "";
+    const ghsaField = typeof o["github_advisory_id"] === "string" ? (o["github_advisory_id"] as string) : null;
+    const ghsaFromUrl = urlStr.match(/GHSA-[0-9a-z-]+/i)?.[0] ?? null;
+    const ghsa = ghsaField ?? ghsaFromUrl;
     const numeric = o["id"] !== undefined && o["id"] !== null ? `NPM-${String(o["id"])}` : null;
     const id = ghsa ?? numeric;
     if (!id) continue;
-    const aliases = ghsa && numeric ? [numeric] : [];
+    const cves = Array.isArray(o["cves"]) ? (o["cves"] as unknown[]).filter((c): c is string => typeof c === "string") : [];
+    const aliases = [...new Set([...(ghsa && numeric ? [numeric] : []), ...cves])];
     const summary = typeof o["title"] === "string" ? (o["title"] as string) : null;
     out.push({ id, aliases, summary, fixedVersions: [] });
   }

@@ -113,4 +113,27 @@ describe("VulnClient npm-audit source", () => {
     expect(vulns.length).toBe(1); // same advisory id from both → deduped
     expect(vulns[0]!.fixedVersions).toContain("1.2.6"); // OSV's fixed version survives the union
   });
+
+  // Real npm bulk endpoint omits github_advisory_id; the GHSA lives in `url`.
+  const NPM_BULK_REALSHAPE = {
+    minimist: [
+      { id: 1179, title: "proto pollution", url: "https://github.com/advisories/GHSA-min", cves: ["CVE-2020-7598"], vulnerable_versions: "<1.2.6", severity: "high" },
+    ],
+  };
+
+  it("derives the GHSA id from the advisory url and captures cves as aliases", async () => {
+    const c = new VulnClient({ cacheDir: mkdtempSync(join(tmpdir(), "ntc-url-")), ttlSeconds: 3600, source: "npm-audit" });
+    vi.spyOn(c as unknown as { _runNpmAudit: () => Promise<unknown> }, "_runNpmAudit").mockResolvedValue(NPM_BULK_REALSHAPE);
+    const vulns = (await c.fetchFor([{ name: "minimist", version: "1.2.0" }])).get("minimist@1.2.0") ?? [];
+    expect(vulns[0]!.id).toBe("GHSA-min");
+    expect(vulns[0]!.aliases).toContain("CVE-2020-7598");
+  });
+
+  it("source=both dedupes when OSV's GHSA matches npm's url-derived GHSA (no double count)", async () => {
+    const c = new VulnClient({ cacheDir: mkdtempSync(join(tmpdir(), "ntc-both2-")), ttlSeconds: 3600, source: "both" });
+    vi.spyOn(c as unknown as { _runOsvQuery: () => Promise<unknown> }, "_runOsvQuery").mockResolvedValue({ vulns: [{ id: "GHSA-min", aliases: [], summary: "osv", affected: [{ ranges: [{ events: [{ fixed: "1.2.6" }] }] }] }] });
+    vi.spyOn(c as unknown as { _runNpmAudit: () => Promise<unknown> }, "_runNpmAudit").mockResolvedValue(NPM_BULK_REALSHAPE);
+    const vulns = (await c.fetchFor([{ name: "minimist", version: "1.2.0" }])).get("minimist@1.2.0") ?? [];
+    expect(vulns.length).toBe(1); // GHSA from url matches OSV → deduped to one
+  });
 });
