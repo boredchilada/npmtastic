@@ -141,3 +141,11 @@ export interface UpdateChange {
   readonly to: string; // new exact version
   readonly note: string | null; // e.g. "CVE floor: GHSA-..."
 }
+
+export interface UpdateResult {
+  readonly manifestPath: string;
+  readonly backupPath: string | null;
+  readonly changes: readonly UpdateChange[];
+  readonly tested: boolean;
+  readonly testPassed: boolean;
+}

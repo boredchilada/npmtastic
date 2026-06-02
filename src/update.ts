@@ -1,8 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { writeFileSync, mkdirSync, copyFileSync } from "node:fs";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
 import semver from "semver";
-import { PinStatus, type Dep, type Vulnerability, type PackageMeta, type UpdateChange } from "./models.js";
+import {
+  PinStatus,
+  type Dep,
+  type Vulnerability,
+  type PackageMeta,
+  type UpdateChange,
+  type Project,
+  type UpdateResult,
+} from "./models.js";
 import { classifyPinStatus, pickLatest } from "./analysis.js";
-import { computeMinSafeVersion } from "./vulns.js";
+import { computeMinSafeVersion, type VulnClient } from "./vulns.js";
+import { readText } from "./fsutil.js";
+import { collectDeps, canonicalName } from "./parsing.js";
+import { loadSuppressions, isSuppressed } from "./suppressions.js";
+import { testInstall } from "./exec.js";
+import { warn, error, info } from "./logging.js";
+import type { RegistryClient } from "./registry.js";
 
 export interface PlannedEdit {
   name: string; // canonical
@@ -102,4 +119,111 @@ export function resolveTarget(input: TargetInput): { newVersion: string; note: s
 export function highestSatisfying(meta: PackageMeta, range: string): string | null {
   const stable = meta.releases.map((r) => r.version).filter((v) => semver.valid(v) && semver.prerelease(v) === null);
   return semver.maxSatisfying(stable, range);
+}
+
+export interface UpdateOptions {
+  pin?: boolean;
+  packages?: readonly string[];
+  test?: boolean;
+  dryRun?: boolean;
+  installer?: (projectRoot: string, newManifestText: string) => Promise<boolean>;
+}
+
+function backupManifest(manifestPath: string, projectRoot: string, raw: string): string {
+  const dir = join(projectRoot, ".npmtastic_backups");
+  mkdirSync(dir, { recursive: true });
+  const sha = createHash("sha256").update(raw).digest("hex").slice(0, 8);
+  const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
+  const dest = join(dir, `package.json_${stamp}_${sha}.json`);
+  copyFileSync(manifestPath, dest);
+  return dest;
+}
+
+export async function updateProject(
+  project: Project,
+  registry: RegistryClient,
+  vuln: VulnClient,
+  opts: UpdateOptions,
+): Promise<UpdateResult> {
+  const manifestPath = join(project.root, "package.json");
+  const empty: UpdateResult = { manifestPath, backupPath: null, changes: [], tested: false, testPassed: true };
+
+  let rawText: string;
+  try {
+    rawText = readText(manifestPath);
+    JSON.parse(rawText);
+  } catch {
+    error(`cannot update ${manifestPath}: not valid JSON`);
+    return empty;
+  }
+
+  const pin = opts.pin ?? false;
+  const only = opts.packages ? new Set(opts.packages.map(canonicalName)) : null;
+  const deps = collectDeps(project).filter((d) => d.direct && (!only || only.has(d.name)));
+  if (deps.length === 0) {
+    info(`update: nothing to do for ${project.name}`);
+    return empty;
+  }
+
+  const metaMap = await registry.fetchMany(deps.map((d) => d.name));
+
+  const baseFor = (d: Dep): string | null => {
+    if (pin) {
+      const meta = metaMap.get(d.name) ?? null;
+      const ms = meta ? highestSatisfying(meta, d.range) : null;
+      return d.resolved && semver.valid(d.resolved) ? d.resolved : ms;
+    }
+    return semver.valid(d.range) ? d.range : null;
+  };
+
+  const pairs = deps
+    .map((d) => ({ name: d.name, base: baseFor(d) }))
+    .filter((x): x is { name: string; base: string } => x.base !== null && semver.valid(x.base) !== null)
+    .map((x) => ({ name: x.name, version: x.base }));
+  const vulnMap = await vuln.fetchFor(pairs);
+  const suppressions = loadSuppressions(project.root);
+
+  const edits: PlannedEdit[] = [];
+  for (const d of deps) {
+    const meta = metaMap.get(d.name) ?? null;
+    const latest = meta ? pickLatest(meta, false).latest : null;
+    const maxSat = meta ? highestSatisfying(meta, d.range) : null;
+    const base = baseFor(d);
+    const active =
+      base && semver.valid(base)
+        ? (vulnMap.get(`${d.name}@${base}`) ?? []).filter((v) => !isSuppressed(suppressions, v, d.name))
+        : [];
+    const t = resolveTarget({ dep: d, pin, latest, maxSatisfying: maxSat, vulns: active });
+    if (t) edits.push({ name: d.name, rawName: d.rawName, oldSpec: d.range, newVersion: t.newVersion, note: t.note });
+  }
+
+  if (edits.length === 0) {
+    info(`update: no changes for ${project.name}`);
+    return empty;
+  }
+
+  const { text: newText, applied, skipped } = rewriteManifestText(rawText, edits);
+  for (const s of skipped) warn(`update: could not locate "${s.rawName}" in ${manifestPath}; left unchanged`);
+  const changes = applied.map(editToChange);
+
+  if (opts.dryRun) {
+    return { manifestPath, backupPath: null, changes, tested: false, testPassed: true };
+  }
+  if (applied.length === 0) return empty;
+
+  const backupPath = backupManifest(manifestPath, project.root, rawText);
+  writeFileSync(manifestPath, newText);
+
+  let tested = false;
+  let testPassed = true;
+  if (opts.test !== false) {
+    tested = true;
+    const install = opts.installer ?? testInstall;
+    testPassed = await install(project.root, newText);
+    if (!testPassed) {
+      warn(`update: test install failed; restoring ${manifestPath}`);
+      writeFileSync(manifestPath, rawText);
+    }
+  }
+  return { manifestPath, backupPath, changes, tested, testPassed };
 }
