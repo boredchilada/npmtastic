@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { readdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readText } from "./fsutil.js";
 import { canonicalName } from "./parsing.js";
+import type { BootstrapResult } from "./models.js";
 
 function readPkgMeta(dir: string): { name: string; version: string } | null {
   const p = join(dir, "package.json");
@@ -153,4 +154,63 @@ export function reconstructFromPnpmLock(text: string): LockReconstruction | null
     return flat;
   };
   return buildReconstruction(null, null, accessor);
+}
+
+export interface BootstrapOptions {
+  fromNodeModules?: boolean;
+}
+
+const NPM_LOCKS = ["package-lock.json", "npm-shrinkwrap.json"];
+
+function assemble(name: string, version: string, groups: Record<string, Record<string, string>>): Record<string, unknown> {
+  const m: Record<string, unknown> = { name, version };
+  for (const key of GROUP_KEYS) {
+    if (groups[key] && Object.keys(groups[key]).length > 0) m[key] = groups[key];
+  }
+  return m;
+}
+
+function tryLockfile(root: string): { source: "npm-lock" | "pnpm-lock"; recon: LockReconstruction } | null {
+  for (const lf of NPM_LOCKS) {
+    const p = join(root, lf);
+    if (existsSync(p)) {
+      const recon = reconstructFromNpmLock(readText(p));
+      if (recon) return { source: "npm-lock", recon };
+    }
+  }
+  const pnpm = join(root, "pnpm-lock.yaml");
+  if (existsSync(pnpm)) {
+    const recon = reconstructFromPnpmLock(readText(pnpm));
+    if (recon) return { source: "pnpm-lock", recon };
+  }
+  return null;
+}
+
+export function bootstrapProject(root: string, opts: BootstrapOptions = {}): BootstrapResult | null {
+  const fallbackName = basename(resolve(root));
+  const warnings: string[] = [];
+
+  if (!opts.fromNodeModules) {
+    const lock = tryLockfile(root);
+    if (lock) {
+      const r = lock.recon;
+      return {
+        manifest: assemble(r.name ?? fallbackName, r.version ?? "0.0.0", r.groups),
+        source: lock.source,
+        warnings: r.warnings,
+      };
+    }
+    warnings.push("bootstrap: no usable lockfile root found; falling back to node_modules enumeration");
+  }
+
+  if (!existsSync(join(root, "node_modules"))) {
+    return null; // neither a usable lockfile nor node_modules → caller errors
+  }
+  const { deps, warnings: nmWarn } = enumerateNodeModules(root, fallbackName);
+  warnings.push(...nmWarn);
+  return {
+    manifest: assemble(fallbackName, "0.0.0", { dependencies: sortKeys(deps) }),
+    source: "node-modules",
+    warnings,
+  };
 }
