@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { writeFileSync, mkdirSync, copyFileSync } from "node:fs";
+import { writeFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 import semver from "semver";
 import {
   PinStatus,
@@ -19,6 +18,7 @@ import { collectDeps, canonicalName } from "./parsing.js";
 import { loadSuppressions, isSuppressed } from "./suppressions.js";
 import { testInstall } from "./exec.js";
 import { warn, error, info } from "./logging.js";
+import { backupManifest } from "./backup.js";
 import type { RegistryClient } from "./registry.js";
 
 export interface PlannedEdit {
@@ -127,16 +127,6 @@ export interface UpdateOptions {
   test?: boolean;
   dryRun?: boolean;
   installer?: (projectRoot: string, newManifestText: string) => Promise<boolean>;
-}
-
-function backupManifest(manifestPath: string, projectRoot: string, raw: string): string {
-  const dir = join(projectRoot, ".npmtastic_backups");
-  mkdirSync(dir, { recursive: true });
-  const sha = createHash("sha256").update(raw).digest("hex").slice(0, 8);
-  const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
-  const dest = join(dir, `package.json_${stamp}_${sha}.json`);
-  copyFileSync(manifestPath, dest);
-  return dest;
 }
 
 export async function updateProject(
