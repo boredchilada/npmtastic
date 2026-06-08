@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detectPackageManager, testInstall, type RunFn } from "../src/exec.js";
+import { detectPackageManager, testInstall, defaultRun, type RunFn } from "../src/exec.js";
 
 function tmp(files: string[] = []): string {
   const d = mkdtempSync(join(tmpdir(), "ntc-exec-"));
@@ -39,4 +39,15 @@ describe("testInstall", () => {
     await testInstall(tmp(["pnpm-lock.yaml"]), '{"name":"x"}', { run });
     expect(seen[0]!.startsWith("pnpm")).toBe(true);
   });
+});
+
+describe("defaultRun (real spawn)", () => {
+  // Regression: before the shell fix, spawning npm's .cmd shim on Windows threw
+  // EINVAL (surfacing as code 127 from the error handler). `npm --version` is fast
+  // and network-free; npm ships with Node so it's available in dev and CI.
+  it("spawns the package manager without EINVAL", async () => {
+    const r = await defaultRun("npm", ["--version"], process.cwd(), 30_000);
+    expect(r.code).toBe(0);
+    expect(r.output).toMatch(/\d+\.\d+\.\d+/);
+  }, 30_000); // npm's cold start via the shell can exceed vitest's 5s default
 });

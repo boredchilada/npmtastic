@@ -21,9 +21,13 @@ export interface RunResult {
 export type RunFn = (cmd: string, args: string[], cwd: string, timeoutMs: number) => Promise<RunResult>;
 
 // The real subprocess boundary. Tests inject a fake `run` instead of calling this.
+// On Windows the package managers are `.cmd` shims; since the CVE-2024-27980 fix,
+// spawning a `.cmd` without `shell: true` throws EINVAL. The command + args here are
+// fully controlled (a package-manager name + literal flags, no untrusted input), so
+// running through the shell on Windows is safe.
 export const defaultRun: RunFn = (cmd, args, cwd, timeoutMs) =>
   new Promise<RunResult>((resolve) => {
-    const child = spawn(cmd, args, { cwd });
+    const child = spawn(cmd, args, { cwd, shell: process.platform === "win32" });
     let output = "";
     const timer = setTimeout(() => {
       child.kill();
@@ -68,8 +72,8 @@ export async function testInstall(
       const src = join(projectRoot, lf);
       if (existsSync(src)) copyFileSync(src, join(dir, lf));
     }
-    const cmd = process.platform === "win32" ? `${pm}.cmd` : pm;
-    const { code, output } = await run(cmd, ["install"], dir, timeoutMs);
+    // Bare name on both platforms; on Windows defaultRun's shell resolves the .cmd shim.
+    const { code, output } = await run(pm, ["install"], dir, timeoutMs);
     if (code !== 0) {
       warn(`test install (${pm}) failed: ${output.split("\n").slice(-3).join(" ").slice(0, 300)}`);
     }
