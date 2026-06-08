@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-07
+
 ### Fixed
 - `update`: the isolated test install no longer fails with `spawn EINVAL` on Windows.
   The package-manager `.cmd` shim is now spawned through the shell, which Node requires

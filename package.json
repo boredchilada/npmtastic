@@ -1,6 +1,6 @@
 {
   "name": "npmtastic",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Node.js dependency auditor — pin posture, registry drift, and known CVEs.",
   "keywords": ["npm", "audit", "dependencies", "cve", "osv", "sarif", "security", "semver", "lockfile", "pnpm", "yarn"],
   "homepage": "https://github.com/boredchilada/npmtastic#readme",

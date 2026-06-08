@@ -22,7 +22,7 @@ export const EXIT_ERROR = 1;
 export const EXIT_ROLLBACK = 2;
 export const EXIT_GATE = 3;
 
-const VERSION = "0.1.0"; // keep in sync with package.json
+const VERSION = "0.1.1"; // keep in sync with package.json
 
 const DRIFT_RANK: Record<string, number> = {
   [SemverDrift.NONE]: 0,
