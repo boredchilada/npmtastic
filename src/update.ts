@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { writeFileSync, copyFileSync } from "node:fs";
+import { writeFileSync, copyFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import semver from "semver";
 import {
@@ -10,7 +10,9 @@ import {
   type UpdateChange,
   type Project,
   type UpdateResult,
+  type SkippedUpdate,
 } from "./models.js";
+
 import { classifyPinStatus, pickLatest } from "./analysis.js";
 import { computeMinSafeVersion, type VulnClient } from "./vulns.js";
 import { readText } from "./fsutil.js";
@@ -68,13 +70,18 @@ export function editToChange(e: PlannedEdit): UpdateChange {
   return { name: e.name, from: e.oldSpec, to: e.newVersion, note: e.note };
 }
 
+export type UpgradeLevel = "patch" | "minor" | "major";
+
 export interface TargetInput {
   dep: Dep;
   pin: boolean;
   latest: string | null;
   maxSatisfying: string | null;
   vulns: readonly Vulnerability[];
+  to?: UpgradeLevel;
+  available?: readonly string[];
 }
+
 
 function vulnNote(vulns: readonly Vulnerability[]): string {
   const ids = vulns.slice(0, 2).map((v) => v.id).filter(Boolean).join(", ") || "unspecified";
@@ -91,22 +98,51 @@ function applyFloor(base: string, vulns: readonly Vulnerability[]): [string, str
   return [base, `CVE (no fix known): ${ids}`];
 }
 
+/** Highest release within `level`, never below the advisory floor. */
+export function selectTarget(
+  current: string,
+  latest: string,
+  minSafe: string | null,
+  level: UpgradeLevel,
+  available?: readonly string[],
+): string | null {
+  const cur = semver.parse(current);
+  if (!cur) return null;
+
+  const parsed = (available ?? [])
+    .map((v) => semver.parse(v))
+    .filter((v): v is semver.SemVer => v !== null);
+  const pool = parsed.length > 0 ? parsed : ([semver.parse(latest)].filter((v): v is semver.SemVer => v !== null));
+
+  const bounded =
+    level === "patch"
+      ? pool.filter((v) => v.major === cur.major && v.minor === cur.minor)
+      : level === "minor"
+        ? pool.filter((v) => v.major === cur.major)
+        : pool;
+
+  const best = bounded.length > 0 ? bounded.reduce((a, b) => (semver.gt(b.version, a.version) ? b : a)) : null;
+  const floor = minSafe ? semver.parse(minSafe) : null;
+  if (floor !== null && (best === null || semver.lt(best.version, floor.version))) return minSafe;
+  return best ? best.version : null;
+}
+
 export function resolveTarget(input: TargetInput): { newVersion: string; note: string | null } | null {
   const { dep, pin, latest, maxSatisfying, vulns } = input;
+  const level = input.to ?? "major";
   const posture = classifyPinStatus(dep.range, dep.url);
   if (posture === PinStatus.URL) return null;
 
   if (!pin) {
     if (posture !== PinStatus.PINNED) return null;
     if (!latest || semver.valid(latest) === null) return null;
-    let target = latest;
-    let note: string | null = null;
-    if (vulns.length > 0) {
-      const [floored, n] = applyFloor(dep.range, vulns);
-      if (semver.valid(floored) && semver.gt(floored, latest)) target = floored;
-      note = n;
-    }
-    return target === dep.range ? null : { newVersion: target, note };
+    const current = semver.valid(dep.range) ? dep.range : null;
+    if (!current) return null;
+    const minSafe = vulns.length > 0 ? computeMinSafeVersion(current, vulns) : null;
+    const target = selectTarget(current, latest, minSafe, level, input.available);
+    if (!target || target === dep.range) return null;
+    const note = vulns.length > 0 ? applyFloor(current, vulns)[1] : null;
+    return { newVersion: target, note };
   }
 
   const baseRaw = dep.resolved && semver.valid(dep.resolved) ? dep.resolved : maxSatisfying;
@@ -115,11 +151,44 @@ export function resolveTarget(input: TargetInput): { newVersion: string; note: s
   return dep.range === target ? null : { newVersion: target, note };
 }
 
+
 // Highest stable version of `meta` that satisfies `range` (pin mode without a lockfile).
 export function highestSatisfying(meta: PackageMeta, range: string): string | null {
   const stable = meta.releases.map((r) => r.version).filter((v) => semver.valid(v) && semver.prerelease(v) === null);
   return semver.maxSatisfying(stable, range);
 }
+
+function skipReason(dep: Dep): string | null {
+  const spec = (dep.url ?? dep.range).trim();
+  const lower = spec.toLowerCase();
+  if (lower.startsWith("workspace:")) return "workspace";
+  if (lower.startsWith("link:")) return "link";
+  if (lower.startsWith("file:")) return "file";
+  if (/^(git\+|git:|github:|gitlab:|bitbucket:)/i.test(spec)) return "git";
+  if (/^https?:/i.test(spec)) return "url";
+  if (/^(npm:|catalog:|portal:|patch:|jsr:)/i.test(spec)) return "non-version";
+  if (dep.url) return "non-version";
+  return null;
+}
+
+function skippedFrom(dep: Dep, reason: string, vulns: readonly Vulnerability[], current: string | null): SkippedUpdate {
+  const minSafe = current && vulns.length > 0 ? computeMinSafeVersion(current, vulns) : null;
+  return {
+    name: dep.name,
+    current: current ?? dep.range,
+    minSafeVersion: minSafe,
+    advisory: vulns[0]?.id ?? null,
+    reason,
+  };
+}
+
+function availableFrom(meta: PackageMeta | null): string[] {
+  if (!meta) return [];
+  const valid = meta.releases.filter((r) => semver.valid(r.version) && semver.prerelease(r.version) === null);
+  const live = valid.filter((r) => !r.deprecated);
+  return (live.length > 0 ? live : valid).map((r) => r.version);
+}
+
 
 export interface UpdateOptions {
   pin?: boolean;
@@ -127,6 +196,17 @@ export interface UpdateOptions {
   test?: boolean;
   dryRun?: boolean;
   installer?: (projectRoot: string, newManifestText: string) => Promise<boolean>;
+  noConfig?: boolean;
+  to?: UpgradeLevel;
+  applyCveFloor?: boolean;
+  /** Isolated test install already uses the OS temp dir; accepted for CLI parity. */
+  tempTestDir?: boolean;
+}
+
+function atomicWrite(filePath: string, content: string): void {
+  const tmp = filePath + `.npmtastic_tmp_${Date.now()}`;
+  writeFileSync(tmp, content, "utf-8");
+  renameSync(tmp, filePath);
 }
 
 export async function updateProject(
@@ -136,7 +216,8 @@ export async function updateProject(
   opts: UpdateOptions,
 ): Promise<UpdateResult> {
   const manifestPath = join(project.root, "package.json");
-  const empty: UpdateResult = { manifestPath, backupPath: null, changes: [], tested: false, testPassed: true };
+  const empty: UpdateResult = { manifestPath, backupPath: null, changes: [], tested: false, testPassed: true, skipped: [] };
+
 
   let rawText: string;
   try {
@@ -148,6 +229,7 @@ export async function updateProject(
   }
 
   const pin = opts.pin ?? false;
+  const applyCveFloor = opts.applyCveFloor !== false;
   const only = opts.packages ? new Set(opts.packages.map(canonicalName)) : null;
   const deps = collectDeps(project).filter((d) => d.direct && (!only || only.has(d.name)));
   if (deps.length === 0) {
@@ -166,35 +248,83 @@ export async function updateProject(
     return semver.valid(d.range) ? d.range : null;
   };
 
-  const pairs = deps
+  const pairs: Array<{ name: string; version: string }> = deps
     .map((d) => ({ name: d.name, base: baseFor(d) }))
     .filter((x): x is { name: string; base: string } => x.base !== null && semver.valid(x.base) !== null)
     .map((x) => ({ name: x.name, version: x.base }));
-  const vulnMap = await vuln.fetchFor(pairs);
-  const suppressions = loadSuppressions(project.root);
+  const extraPairs = deps
+    .filter((d) => skipReason(d) !== null && d.resolved !== null && semver.valid(d.resolved) !== null)
+    .map((d) => ({ name: d.name, version: d.resolved as string }));
+  const pairKeys = new Set(pairs.map((p) => `${p.name}@${p.version}`));
+  for (const extra of extraPairs) {
+    if (!pairKeys.has(`${extra.name}@${extra.version}`)) pairs.push(extra);
+  }
 
+  const vulnMap = applyCveFloor ? await vuln.fetchFor(pairs) : new Map<string, Vulnerability[]>();
+  const suppressions = opts.noConfig || !applyCveFloor ? [] : loadSuppressions(project.root);
+  if (registry.offlineMisses.length > 0 || vuln.offlineMisses.length > 0) {
+    return empty;
+  }
+
+  const level = opts.to ?? "major";
   const edits: PlannedEdit[] = [];
+  const skipped: SkippedUpdate[] = [];
   for (const d of deps) {
     const meta = metaMap.get(d.name) ?? null;
     const latest = meta ? pickLatest(meta, false).latest : null;
     const maxSat = meta ? highestSatisfying(meta, d.range) : null;
     const base = baseFor(d);
+    const resolvedBase = d.resolved && semver.valid(d.resolved) ? d.resolved : base;
     const active =
-      base && semver.valid(base)
-        ? (vulnMap.get(`${d.name}@${base}`) ?? []).filter((v) => !isSuppressed(suppressions, v, d.name))
+      resolvedBase && semver.valid(resolvedBase)
+        ? (vulnMap.get(`${d.name}@${resolvedBase}`) ?? []).filter((v) => !isSuppressed(suppressions, v, d.name))
         : [];
-    const t = resolveTarget({ dep: d, pin, latest, maxSatisfying: maxSat, vulns: active });
-    if (t) edits.push({ name: d.name, rawName: d.rawName, oldSpec: d.range, newVersion: t.newVersion, note: t.note });
+    const reason = skipReason(d);
+    if (reason) {
+      skipped.push(skippedFrom(d, reason, active, resolvedBase));
+      continue;
+    }
+    const t = resolveTarget({
+      dep: d,
+      pin,
+      latest,
+      maxSatisfying: maxSat,
+      vulns: active,
+      to: level,
+      available: availableFrom(meta),
+    });
+    if (t) {
+      edits.push({ name: d.name, rawName: d.rawName, oldSpec: d.range, newVersion: t.newVersion, note: t.note });
+      continue;
+    }
+    if (active.length > 0) {
+      const posture = classifyPinStatus(d.range, d.url);
+      skipped.push(skippedFrom(d, !pin && posture !== PinStatus.PINNED ? "not-eligible" : "up-to-date", active, resolvedBase));
+    }
   }
 
   if (edits.length === 0) {
     info(`update: no changes for ${project.name}`);
-    return empty;
+    return { ...empty, skipped };
   }
 
-  const { text: newText, applied, skipped } = rewriteManifestText(rawText, edits);
-  for (const s of skipped) warn(`update: could not locate "${s.rawName}" in ${manifestPath}; left unchanged`);
+
+  const rewritten = rewriteManifestText(rawText, edits);
+  const newText = rewritten.text;
+  const applied = rewritten.applied;
+  for (const s of rewritten.skipped) {
+    warn(`update: could not locate "${s.rawName}" in ${manifestPath}; left unchanged`);
+    skipped.push({
+      name: s.name,
+      current: s.oldSpec,
+      minSafeVersion: null,
+      advisory: s.note && s.note.includes("CVE") ? s.note : null,
+      reason: "not-found",
+    });
+  }
+
   const changes = applied.map(editToChange);
+
 
   // Safety: the surgical edit is textual — confirm it produced valid JSON and that
   // every applied edit actually landed on the right dependency before we touch disk.
@@ -204,7 +334,7 @@ export async function updateProject(
       reparsed = JSON.parse(newText) as Record<string, unknown>;
     } catch {
       error(`update: rewrite produced invalid JSON for ${manifestPath}; aborting (no changes written)`);
-      return empty;
+      return { ...empty, skipped };
     }
     const GROUPS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
     for (const e of applied) {
@@ -214,18 +344,20 @@ export async function updateProject(
       });
       if (!landed) {
         error(`update: post-edit verification failed for "${e.rawName}" in ${manifestPath}; aborting (no changes written)`);
-        return empty;
+        return { ...empty, skipped };
+
       }
     }
   }
 
   if (opts.dryRun) {
-    return { manifestPath, backupPath: null, changes, tested: false, testPassed: true };
+    return { manifestPath, backupPath: null, changes, tested: false, testPassed: true, skipped };
   }
-  if (applied.length === 0) return empty;
+  if (applied.length === 0) return { ...empty, skipped };
+
 
   const backupPath = backupManifest(manifestPath, project.root, rawText);
-  writeFileSync(manifestPath, newText);
+  atomicWrite(manifestPath, newText);
 
   let tested = false;
   let testPassed = true;
@@ -245,5 +377,6 @@ export async function updateProject(
       }
     }
   }
-  return { manifestPath, backupPath, changes, tested, testPassed };
+  return { manifestPath, backupPath, changes, tested, testPassed, skipped };
+
 }

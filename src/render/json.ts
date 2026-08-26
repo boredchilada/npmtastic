@@ -10,6 +10,8 @@ function depToJson(a: DepAudit): unknown {
     range: a.dep.range,
     resolved: a.dep.resolved,
     direct: a.dep.direct,
+    via: a.via ?? [],
+
     group: a.dep.source.group,
     url: a.dep.url,
     pinStatus: a.pinStatus,
@@ -19,6 +21,9 @@ function depToJson(a: DepAudit): unknown {
     deprecated: a.deprecated,
     latestReleaseDate: a.latestReleaseDate,
     latestReleaseAgeDays: a.latestReleaseAgeDays,
+    currentReleaseDate: a.currentReleaseDate ?? null,
+    daysBehind: a.daysBehind ?? null,
+    license: a.license ?? null,
     minSafeVersion: a.minSafeVersion,
     vulnerabilities: a.vulnerabilities.map((v) => ({
       id: v.id,
@@ -47,6 +52,14 @@ function projectToJson(p: ProjectAudit): unknown {
     vulnCount: p.vulnCount,
     vulnUnreachable: p.vulnUnreachable,
     suppressedCount: p.suppressedCount,
+    integrityChecked: p.integrityChecked ?? false,
+    integrityFindings: (p.integrityFindings ?? []).map((f) => ({
+      name: f.name,
+      version: f.version,
+      kind: f.kind,
+      detail: f.detail,
+    })),
+
     deps: p.deps.map(depToJson),
   };
 }

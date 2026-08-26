@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { parse as parseYaml } from "yaml";
-import { DepSourceKind, makeDep, type Dep, type DepSource, type Project } from "./models.js";
+import { DepSourceKind, makeDep, type Dep, type DepSource, type LockPackage, type Project } from "./models.js";
 import { readText } from "./fsutil.js";
+
 import { warn } from "./logging.js";
 
 const GROUP_TO_KEY: Record<string, string> = {
@@ -290,3 +291,149 @@ export function collectDeps(project: Project): Dep[] {
   }
   return out;
 }
+
+function stringDeps(entry: Record<string, unknown>, keys: readonly string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of keys) {
+    const section = entry[key];
+    if (!section || typeof section !== "object") continue;
+    for (const [name, spec] of Object.entries(section as Record<string, unknown>)) {
+      if (typeof spec === "string") out[name] = spec;
+    }
+  }
+  return out;
+}
+
+function lockPackageFromEntry(name: string, path: string, entry: Record<string, unknown>, includeDev: boolean): LockPackage {
+  const version = typeof entry["version"] === "string" ? entry["version"] : "";
+  const integrity = typeof entry["integrity"] === "string" ? entry["integrity"] : null;
+  const resolved = typeof entry["resolved"] === "string" ? entry["resolved"] : null;
+  const keys = includeDev
+    ? ["dependencies", "optionalDependencies", "devDependencies"]
+    : ["dependencies", "optionalDependencies"];
+  return {
+    name: canonicalName(name),
+    version,
+    path,
+    integrity,
+    resolved,
+    dependencies: stringDeps(entry, keys),
+    link: entry["link"] === true,
+  };
+}
+
+function parseNpmLockV1Packages(tree: Record<string, unknown>, parentPath: string): LockPackage[] {
+  const out: LockPackage[] = [];
+  for (const [name, entryUnknown] of Object.entries(tree)) {
+    if (!entryUnknown || typeof entryUnknown !== "object") continue;
+    const entry = entryUnknown as Record<string, unknown>;
+    const path = parentPath ? `${parentPath}/node_modules/${name}` : `node_modules/${name}`;
+    out.push(lockPackageFromEntry(name, path, entry, false));
+    const nested = entry["dependencies"];
+    if (nested && typeof nested === "object") {
+      out.push(...parseNpmLockV1Packages(nested as Record<string, unknown>, path));
+    }
+  }
+  return out;
+}
+
+export function parseNpmLockPackages(source: DepSource): LockPackage[] {
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(readText(source.path)) as Record<string, unknown>;
+  } catch (e) {
+    warn(`could not parse ${source.path}: ${(e as Error).message}`);
+    return [];
+  }
+  const packages = raw["packages"];
+  if (packages && typeof packages === "object") {
+    const out: LockPackage[] = [];
+    for (const [installPath, entryUnknown] of Object.entries(packages as Record<string, unknown>)) {
+      if (!entryUnknown || typeof entryUnknown !== "object") continue;
+      const entry = entryUnknown as Record<string, unknown>;
+      if (installPath === "") {
+        const name = typeof entry["name"] === "string" ? entry["name"] : "";
+        out.push(lockPackageFromEntry(name || "root", "", entry, true));
+        continue;
+      }
+      const name = nameFromLockPath(installPath);
+      if (!name) continue;
+      out.push(lockPackageFromEntry(name, installPath, entry, false));
+    }
+    return out;
+  }
+  const top = raw["dependencies"];
+  if (top && typeof top === "object") return parseNpmLockV1Packages(top as Record<string, unknown>, "");
+  return [];
+}
+
+export function collectLockPackages(project: Project): LockPackage[] {
+  const lock = project.sources.find((s) => s.kind === DepSourceKind.NPM_LOCK);
+  if (!lock) return [];
+  return parseNpmLockPackages(lock);
+}
+
+function resolveLockChild(
+  parentPath: string,
+  childName: string,
+  byPath: Map<string, LockPackage>,
+): LockPackage | undefined {
+  const nested = parentPath ? `${parentPath}/node_modules/${childName}` : `node_modules/${childName}`;
+  const direct = byPath.get(nested);
+  if (direct) return direct;
+  let cursor = parentPath;
+  while (true) {
+    const idx = cursor.lastIndexOf("/node_modules/");
+    cursor = idx === -1 ? "" : cursor.slice(0, idx);
+    const candidate = cursor ? `${cursor}/node_modules/${childName}` : `node_modules/${childName}`;
+    const hit = byPath.get(candidate);
+    if (hit) return hit;
+    if (cursor === "") break;
+  }
+  return undefined;
+}
+
+function viaFromInstallPath(installPath: string): string[] {
+  const parts: string[] = [];
+  const re = /node_modules\/(@[^/]+\/[^/]+|[^/]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(installPath)) !== null) {
+    if (match[1]) parts.push(match[1]);
+  }
+  return parts.slice(0, -1);
+}
+
+/** Shortest lock path from a direct owner, excluding the root and this package. */
+export function dependencyPaths(packages: readonly LockPackage[]): Map<string, string[]> {
+  const byPath = new Map<string, LockPackage>();
+  for (const pkg of packages) byPath.set(pkg.path, pkg);
+
+  const paths = new Map<string, string[]>();
+  const seen = new Set<string>([""]);
+  const queue: Array<{ path: string; trail: string[] }> = [{ path: "", trail: [] }];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) break;
+    const parent = byPath.get(current.path);
+    const names = parent ? Object.keys(parent.dependencies).sort() : [];
+    for (const name of names) {
+      const child = resolveLockChild(current.path, name, byPath);
+      if (!child || seen.has(child.path)) continue;
+      seen.add(child.path);
+      const key = `${child.name}@${child.version}`;
+      if (!paths.has(key)) paths.set(key, current.trail);
+      queue.push({ path: child.path, trail: [...current.trail, child.name] });
+    }
+  }
+
+  for (const pkg of packages) {
+    if (pkg.path === "") continue;
+    const key = `${pkg.name}@${pkg.version}`;
+    if (paths.has(key)) continue;
+    const inferred = viaFromInstallPath(pkg.path);
+    if (inferred.length > 0) paths.set(key, inferred);
+  }
+  return paths;
+}
+

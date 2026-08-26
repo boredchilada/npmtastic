@@ -93,6 +93,12 @@ function renderSummary(audits: readonly ProjectAudit[]): string {
   return lines.join("\n");
 }
 
+function origin(d: DepAudit): string {
+  if (d.dep.direct) return "";
+  if (d.via && d.via.length > 0) return `  ${pc.dim(`(via ${d.via.join(" -> ")})`)}`;
+  return `  ${pc.dim("(transitive)")}`;
+}
+
 function renderTree(p: ProjectAudit): string {
   const lines: string[] = [projectHeader(p)];
   const sorted = [...p.deps].sort((a, b) => a.dep.name.localeCompare(b.dep.name));
@@ -102,10 +108,27 @@ function renderTree(p: ProjectAudit): string {
         ? ""
         : `  ${a.dep.resolved ?? a.dep.range} -> ${a.latest ?? "?"} (${colorDrift(a.drift)})`;
     const cve = a.vulnerabilities.length > 0 ? "  " + cveCell(a) : "";
-    lines.push(`  - ${a.dep.name}  ${pc.dim(a.pinStatus)}${drift}${cve}`);
+    lines.push(`  - ${a.dep.name}  ${pc.dim(a.pinStatus)}${drift}${cve}${origin(a)}`);
   }
   return lines.join("\n");
 }
+
+function renderIntegrity(audits: readonly ProjectAudit[]): string {
+  const findings = audits.flatMap((p) => (p.integrityFindings ?? []).map((f) => ({ project: p.project.name, f })));
+  if (findings.length === 0 && !audits.some((p) => p.integrityChecked)) return "";
+  const lines = ["", pc.bold("Integrity:")];
+  if (findings.length === 0 && audits.every((p) => p.integrityChecked)) {
+    lines.push(`  ${pc.green("all resolved packages verified against the npm registry")}`);
+    return lines.join("\n");
+  }
+  for (const { project, f } of findings) {
+    const style = f.kind === "mismatch" ? pc.red : f.kind === "unexpected-source" ? pc.yellow : pc.dim;
+    const version = f.version ? ` ${f.version}` : "";
+    lines.push(`  ${style(f.kind)} ${f.name}${version}  ${pc.dim(project)}  ${pc.dim(f.detail)}`);
+  }
+  return lines.join("\n");
+}
+
 
 function aggregateFooter(audits: readonly ProjectAudit[]): string {
   const projects = audits.length;
@@ -123,6 +146,8 @@ export function renderTerminal(audits: readonly ProjectAudit[], view: View): str
   if (view === "summary") body = renderSummary(audits);
   else if (view === "table") body = audits.map(renderTable).join("\n\n");
   else body = audits.map(renderTree).join("\n\n");
+  body += renderIntegrity(audits);
   if (audits.length > 1) body += "\n\n" + aggregateFooter(audits);
   return body;
 }
+

@@ -76,6 +76,9 @@ export interface ReleaseInfo {
   readonly deprecated: string | null;
   readonly enginesNode: string | null;
   readonly uploadTime: string | null; // ISO 8601
+  readonly license: string | null;
+  readonly integrity: string | null;
+
 }
 
 export interface PackageMeta {
@@ -89,7 +92,30 @@ export interface Vulnerability {
   readonly aliases: readonly string[];
   readonly summary: string | null;
   readonly fixedVersions: readonly string[];
+  readonly severity: string; // critical | high | moderate | low | unknown
+  readonly cvss: string | null;
+  readonly cweIds: readonly string[];
+  readonly references: readonly string[];
+  readonly published: string | null;
 }
+
+export interface IntegrityFinding {
+  readonly name: string;
+  readonly version: string;
+  readonly kind: "mismatch" | "unexpected-source" | "unverifiable";
+  readonly detail: string;
+}
+
+export interface LockPackage {
+  readonly name: string;
+  readonly version: string;
+  readonly path: string;
+  readonly integrity: string | null;
+  readonly resolved: string | null;
+  readonly dependencies: Readonly<Record<string, string>>;
+  readonly link: boolean;
+}
+
 
 export interface DepAudit {
   readonly dep: Dep;
@@ -103,7 +129,15 @@ export interface DepAudit {
   readonly minSafeVersion: string | null;
   readonly latestReleaseDate: string | null; // ISO 8601
   readonly latestReleaseAgeDays: number | null;
+  readonly currentReleaseDate: string | null;
+  readonly daysBehind: number | null;
+  readonly license: string | null;
+  readonly via: readonly string[];
+  readonly available: readonly string[];
+
   readonly warnings: readonly string[];
+  readonly registryUnreachable?: boolean;
+  readonly vulnUnreachable?: boolean;
 }
 
 export interface ProjectAudit {
@@ -116,24 +150,36 @@ export interface ProjectAudit {
   readonly vulnCount: number;
   readonly vulnUnreachable: number;
   readonly suppressedCount: number;
+  readonly integrityChecked: boolean;
+  readonly integrityFindings: readonly IntegrityFinding[];
+
 }
 
 export function makeDepAudit(d: DepAudit): DepAudit {
   return Object.freeze({
     ...d,
+    currentReleaseDate: d.currentReleaseDate ?? null,
+    daysBehind: d.daysBehind ?? null,
+    license: d.license ?? null,
+    via: Object.freeze([...(d.via ?? [])]),
+    available: Object.freeze([...(d.available ?? [])]),
     vulnerabilities: Object.freeze([...d.vulnerabilities]),
     suppressedVulnerabilities: Object.freeze([...(d.suppressedVulnerabilities ?? [])]),
     warnings: Object.freeze([...d.warnings]),
   });
 }
 
+
 export function makeProjectAudit(p: ProjectAudit): ProjectAudit {
   return Object.freeze({
     ...p,
+    integrityChecked: p.integrityChecked ?? false,
+    integrityFindings: Object.freeze([...(p.integrityFindings ?? [])]),
     deps: Object.freeze([...p.deps]),
     driftSummary: Object.freeze({ ...p.driftSummary }),
   });
 }
+
 
 export interface UpdateChange {
   readonly name: string; // canonical
@@ -142,12 +188,23 @@ export interface UpdateChange {
   readonly note: string | null; // e.g. "CVE floor: GHSA-..."
 }
 
+export interface SkippedUpdate {
+  readonly name: string;
+  readonly current: string | null;
+  readonly minSafeVersion: string | null;
+  readonly advisory: string | null;
+  readonly reason: string;
+}
+
+
 export interface UpdateResult {
   readonly manifestPath: string;
   readonly backupPath: string | null;
   readonly changes: readonly UpdateChange[];
   readonly tested: boolean;
   readonly testPassed: boolean;
+  readonly skipped: readonly SkippedUpdate[];
+
 }
 
 export interface BootstrapResult {

@@ -20,19 +20,21 @@ export class JsonCache {
   constructor(
     private readonly dir: string,
     private readonly ttlSeconds: number,
+    private readonly offline = false,
+    readonly enabled = true,
   ) {}
-
   private pathFor(segments: string[]): string {
     return join(this.dir, ...segments) + ".json";
   }
 
   read<T>(segments: string[]): T | null {
-    if (this.ttlSeconds <= 0) return null;
+    if (!this.offline && this.ttlSeconds <= 0) return null;
     const p = this.pathFor(segments);
     if (!existsSync(p)) return null;
     try {
       const ageSeconds = (Date.now() - statSync(p).mtimeMs) / 1000;
-      if (ageSeconds > this.ttlSeconds) return null;
+      // Offline: an old answer beats no answer, so the TTL is ignored.
+      if (!this.offline && ageSeconds > this.ttlSeconds) return null;
       return JSON.parse(readFileSync(p, "utf-8")) as T;
     } catch {
       return null;
@@ -40,6 +42,8 @@ export class JsonCache {
   }
 
   write(segments: string[], value: unknown): void {
+    if (!this.enabled) return;
+    if (this.offline) return;
     const p = this.pathFor(segments);
     try {
       mkdirSync(dirname(p), { recursive: true });

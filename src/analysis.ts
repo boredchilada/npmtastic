@@ -2,13 +2,17 @@
 import semver from "semver";
 import { PinStatus, SemverDrift } from "./models.js";
 import type { PackageMeta, ReleaseInfo } from "./models.js";
-import { collectDeps } from "./parsing.js";
-import { computeMinSafeVersion } from "./vulns.js";
+import { collectDeps, collectLockPackages, dependencyPaths } from "./parsing.js";
+
+import { computeMinSafeVersion, type VulnClient } from "./vulns.js";
+
 import { loadSuppressions, isSuppressed } from "./suppressions.js";
-import { makeDepAudit, makeProjectAudit } from "./models.js";
+import { makeDepAudit, makeProjectAudit, type IntegrityFinding } from "./models.js";
+
 import type { Dep, DepAudit, Project, ProjectAudit } from "./models.js";
 import type { RegistryClient } from "./registry.js";
-import type { VulnClient } from "./vulns.js";
+import { verifyLock } from "./verify.js";
+
 
 export function classifyPinStatus(range: string, url: string | null): PinStatus {
   if (url) return PinStatus.URL;
@@ -101,7 +105,10 @@ export function pickLatest(meta: PackageMeta, includePrereleases: boolean): Late
 
 export interface AuditOptions {
   readonly includePrereleases?: boolean;
+  readonly noConfig?: boolean;
+  readonly verify?: boolean;
 }
+
 
 function currentVersion(dep: Dep): string | null {
   if (dep.resolved && semver.valid(dep.resolved)) return dep.resolved;
@@ -116,6 +123,26 @@ function ageDays(iso: string | null): number | null {
   return Math.floor((Date.now() - t) / 86_400_000);
 }
 
+function asUtcDate(iso: string | null): number | null {
+  if (!iso) return null;
+  const datePart = iso.split("T", 1)[0]!.split(" ", 1)[0]!;
+  const parts = datePart.split("-");
+  if (parts.length < 3) return null;
+  const y = Number.parseInt(parts[0]!, 10);
+  const m = Number.parseInt(parts[1]!, 10);
+  const d = Number.parseInt(parts[2]!, 10);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
+  const ms = Date.UTC(y, m - 1, d);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function daysBetween(earlier: string | null, later: string | null): number | null {
+  const start = asUtcDate(earlier);
+  const end = asUtcDate(later);
+  if (start === null || end === null) return null;
+  return Math.max(Math.floor((end - start) / 86_400_000), 0);
+}
+
 function emptyDriftSummary(): Record<string, number> {
   return {
     [SemverDrift.NONE]: 0,
@@ -127,6 +154,16 @@ function emptyDriftSummary(): Record<string, number> {
   };
 }
 
+function availableVersions(meta: PackageMeta | null, includePre: boolean): string[] {
+  if (!meta) return [];
+  const valid = meta.releases.filter((r) => semver.valid(r.version) !== null);
+  const pool = includePre ? valid : valid.filter((r) => semver.prerelease(r.version) === null);
+  const live = pool.filter((r) => !r.deprecated);
+  const chosen = live.length > 0 ? live : pool;
+  return chosen.map((r) => r.version).sort((a, b) => semver.rcompare(a, b));
+}
+
+
 export async function auditProject(
   project: Project,
   registry: RegistryClient,
@@ -135,7 +172,10 @@ export async function auditProject(
 ): Promise<ProjectAudit> {
   const includePre = opts.includePrereleases ?? false;
   const deps = collectDeps(project);
-  const suppressionRules = loadSuppressions(project.root);
+  const lockPkgs = collectLockPackages(project);
+  const paths = dependencyPaths(lockPkgs);
+
+  const suppressionRules = opts.noConfig ? [] : loadSuppressions(project.root);
 
   const metaMap = await registry.fetchMany(deps.map((d) => d.name));
   const pairs = deps
@@ -152,8 +192,10 @@ export async function auditProject(
     const current = currentVersion(d);
     const drift = meta ? classifyDrift(current, effectiveLatest) : SemverDrift.UNKNOWN;
     const pinStatus = classifyPinStatus(d.range, d.url);
-    const deprecated =
-      meta && current ? (meta.releases.find((r) => r.version === current)?.deprecated ?? null) : null;
+    const release = meta && current ? (meta.releases.find((r) => r.version === current) ?? null) : null;
+    const deprecated = release?.deprecated ?? null;
+    const license = release?.license ?? null;
+    const currentReleaseDate = release?.uploadTime ?? null;
     const key = d.resolved && semver.valid(d.resolved) ? `${d.name}@${d.resolved}` : null;
     const allVulns = key ? (vulnMap.get(key) ?? []) : [];
     const vulnerabilities = allVulns.filter((v) => !isSuppressed(suppressionRules, v, d.name));
@@ -161,6 +203,7 @@ export async function auditProject(
     const minSafeVersion =
       key && vulnerabilities.length > 0 ? computeMinSafeVersion(d.resolved as string, vulnerabilities) : null;
 
+    const pathKey = current ? `${d.name}@${current}` : null;
     return makeDepAudit({
       dep: d,
       latest: pick.latest,
@@ -173,8 +216,16 @@ export async function auditProject(
       minSafeVersion,
       latestReleaseDate: pick.latestReleaseDate,
       latestReleaseAgeDays: ageDays(pick.latestReleaseDate),
+      currentReleaseDate,
+      daysBehind: daysBetween(currentReleaseDate, pick.latestReleaseDate),
+      license,
+      via: pathKey ? (paths.get(pathKey) ?? []) : [],
+      available: availableVersions(meta, includePre),
       warnings: [],
+      registryUnreachable: !metaMap.has(d.name),
+      vulnUnreachable: key !== null && vuln.unreachable.has(key),
     });
+
   });
 
   const driftSummary = emptyDriftSummary();
@@ -191,7 +242,38 @@ export async function auditProject(
   const suppressedCount = depAudits.reduce((n, a) => n + (a.suppressedVulnerabilities?.length ?? 0), 0);
   const deprecatedCount = depAudits.filter((a) => a.deprecated !== null).length;
   const registryUnreachable = deps.filter((d) => !metaMap.has(d.name)).length;
+
+
   const vulnUnreachable = pairs.filter((p) => vuln.unreachable.has(`${p.name}@${p.version}`)).length;
+
+  let integrityChecked = false;
+  const integrityFindings: IntegrityFinding[] = [];
+  if (opts.verify) {
+    const external = lockPkgs.filter((pkg) => pkg.path !== "");
+    if (external.length > 0) {
+      integrityFindings.push(...verifyLock(external, metaMap));
+      integrityChecked = true;
+    } else {
+      integrityFindings.push({
+        name: project.name,
+        version: "",
+        kind: "unverifiable",
+        detail: "lockfile missing or has no packages",
+      });
+    }
+    const locked = new Set(external.map((pkg) => pkg.name));
+    for (const d of deps) {
+      if (d.direct && d.url && !locked.has(d.name)) {
+        integrityFindings.push({
+          name: d.name,
+          version: d.resolved ?? "",
+          kind: "unexpected-source",
+          detail: d.url,
+        });
+      }
+    }
+  }
+
 
   return makeProjectAudit({
     project,
@@ -203,5 +285,8 @@ export async function auditProject(
     vulnCount,
     vulnUnreachable,
     suppressedCount,
+    integrityChecked,
+    integrityFindings,
   });
+
 }
